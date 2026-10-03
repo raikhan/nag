@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Separator line between list sections spilled over onto a second line
+
 ### Changed
 - Upgraded UI stack to Bubble Tea v2 (`charm.land/bubbletea/v2` v2.0.10), Bubbles v2 (v2.2.1), and Lip Gloss v2 (v2.0.6); requires Go 1.26+
 - List styling now adapts to the terminal's light/dark background; app accent colors unchanged

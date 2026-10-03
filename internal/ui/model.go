@@ -453,8 +453,10 @@ func (m Model) renderPanel(content string, width, height int, focused bool) stri
 
 func (m *Model) resize() {
 	m.layout = ComputeLayout(m.width, m.height)
-	m.listPanel.SetSize(m.layout.ListsWidth, m.layout.PanelHeight)
-	m.reminderPanel.SetSize(m.layout.RemindersWidth, m.layout.PanelHeight)
+	// Panel border styles consume 2 columns horizontally, so the lists must
+	// be sized to the inner content width, not the outer panel width.
+	m.listPanel.SetSize(m.layout.ListsWidth-2, m.layout.PanelHeight)
+	m.reminderPanel.SetSize(m.layout.RemindersWidth-2, m.layout.PanelHeight)
 	m.helpOverlay.SetSize(m.width, m.height)
 	m.createDlg.SetSize(m.width, m.height)
 	m.createListDlg.SetSize(m.width, m.height)

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/oronbz/nag/internal/reminders"
 	"github.com/oronbz/nag/internal/ui/messages"
@@ -206,5 +207,40 @@ func TestV2BackgroundPreservesListState(t *testing.T) {
 	}
 	if view := ansi.Strip(m.listPanel.View()); view != filterView {
 		t.Fatalf("displayed filter changed:\nbefore = %q\nafter  = %q", filterView, view)
+	}
+}
+
+// TestV2PanelContentFitsWidth guards the separator spill-over: a separator
+// item is rendered at the list's full width, so the list must be sized to the
+// panel's inner content width (outer width minus the 2 border columns).
+func TestV2PanelContentFitsWidth(t *testing.T) {
+	m := NewModel(nil)
+	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
+		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
+		{Kind: reminders.ListSeparator},
+		{ID: "query", Title: "Query", Kind: reminders.ListNormal},
+	}})
+	m = deliver2(t, m, messages.RemindersLoadedMsg{Reminders: []reminders.Reminder{
+		{ID: "r-alpha", Title: "Alpha"},
+		{ID: "r-query", Title: "Query"},
+	}})
+
+	innerLists := m.layout.ListsWidth - 2
+	innerReminders := m.layout.RemindersWidth - 2
+	for _, panel := range []struct {
+		name    string
+		view    string
+		maximum int
+	}{
+		{"lists", m.listPanel.View(), innerLists},
+		{"reminders", m.reminderPanel.View(), innerReminders},
+	} {
+		for i, line := range strings.Split(ansi.Strip(panel.view), "\n") {
+			if w := lipgloss.Width(line); w > panel.maximum {
+				t.Errorf("%s panel line %d is %d wide, max inner width is %d: %q",
+					panel.name, i, w, panel.maximum, line)
+			}
+		}
 	}
 }
