@@ -4,9 +4,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/oronbz/nag/internal/reminders"
 	"github.com/oronbz/nag/internal/ui/styles"
 )
@@ -21,6 +21,19 @@ type EditSubmitMsg struct {
 }
 
 const fieldCount = 4
+
+// applyInputStyles restores V1 terminal-default input rendering: a teal
+// prompt and unstyled text, applied to both focus states.
+func applyInputStyles(ti *textinput.Model) {
+	s := ti.Styles()
+	prompt := lipgloss.NewStyle().Foreground(styles.Teal)
+	s.Focused.Prompt = prompt
+	s.Blurred.Prompt = prompt
+	text := lipgloss.NewStyle()
+	s.Focused.Text = text
+	s.Blurred.Text = text
+	ti.SetStyles(s)
+}
 
 type CreateModel struct {
 	titleInput    textinput.Model
@@ -39,30 +52,30 @@ func NewCreate() CreateModel {
 	ti := textinput.New()
 	ti.Placeholder = "Buy groceries"
 	ti.CharLimit = 256
-	ti.Width = 58
+	ti.SetWidth(58)
 	ti.Prompt = "Title:    "
-	ti.PromptStyle = lipgloss.NewStyle().Foreground(styles.Teal)
+	applyInputStyles(&ti)
 
 	ni := textinput.New()
 	ni.Placeholder = "Optional notes"
 	ni.CharLimit = 1024
-	ni.Width = 58
+	ni.SetWidth(58)
 	ni.Prompt = "Notes:    "
-	ni.PromptStyle = lipgloss.NewStyle().Foreground(styles.Teal)
+	applyInputStyles(&ni)
 
 	di := textinput.New()
 	di.Placeholder = "today, tomorrow, 2025-03-15, 2025-03-15 14:30"
 	di.CharLimit = 32
-	di.Width = 58
+	di.SetWidth(58)
 	di.Prompt = "Due date: "
-	di.PromptStyle = lipgloss.NewStyle().Foreground(styles.Teal)
+	applyInputStyles(&di)
 
 	pi := textinput.New()
 	pi.Placeholder = "none, low, medium, high"
 	pi.CharLimit = 16
-	pi.Width = 58
+	pi.SetWidth(58)
 	pi.Prompt = "Priority: "
-	pi.PromptStyle = lipgloss.NewStyle().Foreground(styles.Teal)
+	applyInputStyles(&pi)
 
 	return CreateModel{
 		titleInput:    ti,
@@ -157,7 +170,7 @@ func (m CreateModel) Update(msg tea.Msg) (CreateModel, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "esc":
 			m.Hide()

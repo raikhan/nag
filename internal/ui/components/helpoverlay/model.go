@@ -3,9 +3,9 @@ package helpoverlay
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/oronbz/nag/internal/ui/styles"
 )
 
@@ -31,7 +31,7 @@ func (m *Model) SetSize(width, height int) {
 	if vh < 20 {
 		vh = 20
 	}
-	m.viewport = viewport.New(vw-4, vh-4)
+	m.viewport = viewport.New(viewport.WithWidth(vw-4), viewport.WithHeight(vh-4))
 	m.viewport.SetContent(helpContent())
 }
 
@@ -61,7 +61,7 @@ func (m Model) View() string {
 	}
 
 	content := styles.HelpOverlayStyle.
-		Width(m.viewport.Width + 4).
+		Width(m.viewport.Width() + 4).
 		Render(m.viewport.View())
 
 	return lipgloss.Place(m.width, m.height,

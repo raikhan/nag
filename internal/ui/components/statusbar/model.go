@@ -3,7 +3,7 @@ package statusbar
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/oronbz/nag/internal/ui/styles"
 )
 
@@ -69,9 +69,9 @@ var (
 			Foreground(lipgloss.Color("#000000")).
 			Bold(true).
 			Padding(0, 1)
-	keyStyle = lipgloss.NewStyle().Foreground(styles.Teal).Bold(true)
-	dimStyle = lipgloss.NewStyle().Foreground(styles.DimGray)
-	errStyle = lipgloss.NewStyle().Foreground(styles.Red)
+	keyStyle  = lipgloss.NewStyle().Foreground(styles.Teal).Bold(true)
+	dimStyle  = lipgloss.NewStyle().Foreground(styles.DimGray)
+	errStyle  = lipgloss.NewStyle().Foreground(styles.Red)
 	infoStyle = lipgloss.NewStyle().Foreground(styles.Green)
 
 	listsHints = []hint{

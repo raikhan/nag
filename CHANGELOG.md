@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- Upgraded UI stack to Bubble Tea v2 (`charm.land/bubbletea/v2` v2.0.10), Bubbles v2 (v2.2.1), and Lip Gloss v2 (v2.0.6); requires Go 1.26+
+- List styling now adapts to the terminal's light/dark background; app accent colors unchanged
+
 ## [0.3.2] - 2026-03-04
 
 ### Fixed

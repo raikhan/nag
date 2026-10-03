@@ -3,7 +3,7 @@ package commands
 import (
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/oronbz/nag/internal/ui/messages"
 )
 

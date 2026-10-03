@@ -3,9 +3,9 @@ package dialog
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/oronbz/nag/internal/ui/styles"
 )
 
@@ -30,9 +30,9 @@ func NewCreateList() CreateListModel {
 	ti := textinput.New()
 	ti.Placeholder = "Shopping"
 	ti.CharLimit = 256
-	ti.Width = 44
+	ti.SetWidth(44)
 	ti.Prompt = "Name: "
-	ti.PromptStyle = lipgloss.NewStyle().Foreground(styles.Teal)
+	applyInputStyles(&ti)
 
 	return CreateListModel{titleInput: ti}
 }
@@ -75,7 +75,7 @@ func (m CreateListModel) Update(msg tea.Msg) (CreateListModel, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "esc":
 			m.Hide()

@@ -1,6 +1,6 @@
 package ui
 
-import "github.com/charmbracelet/bubbles/key"
+import "charm.land/bubbles/v2/key"
 
 type KeyMap struct {
 	Up             key.Binding
@@ -15,11 +15,11 @@ type KeyMap struct {
 	ToggleComplete key.Binding
 	NewReminder    key.Binding
 	Edit           key.Binding
-	Delete          key.Binding
-	OpenInApp       key.Binding
-	ShowCompleted   key.Binding
-	Sort            key.Binding
-	Refresh         key.Binding
+	Delete         key.Binding
+	OpenInApp      key.Binding
+	ShowCompleted  key.Binding
+	Sort           key.Binding
+	Refresh        key.Binding
 	Filter         key.Binding
 	Help           key.Binding
 	Quit           key.Binding
@@ -64,7 +64,7 @@ var Keys = KeyMap{
 		key.WithHelp("C-u", "page up"),
 	),
 	ToggleComplete: key.NewBinding(
-		key.WithKeys(" ", "x"),
+		key.WithKeys("space", "x"),
 		key.WithHelp("Space/x", "toggle complete"),
 	),
 	NewReminder: key.NewBinding(

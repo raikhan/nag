@@ -5,9 +5,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/list"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/oronbz/nag/internal/reminders"
 	"github.com/oronbz/nag/internal/ui/styles"
 )
@@ -97,10 +97,21 @@ func New(width, height int) Model {
 	l.Title = "Lists"
 	l.SetShowStatusBar(false)
 	l.SetShowHelp(false)
-	l.Styles.Title = styles.TitleStyle
 	l.DisableQuitKeybindings()
 
-	return Model{list: l}
+	m := Model{list: l}
+	m.SetDarkBackground(true)
+	return m
+}
+
+// SetDarkBackground reapplies the list's styles for a dark or light
+// terminal background without touching items, selection, or filter state.
+func (m *Model) SetDarkBackground(isDark bool) {
+	m.list.Styles = list.DefaultStyles(isDark)
+	m.list.Styles.Title = styles.TitleStyle
+	m.list.FilterInput.SetStyles(m.list.Styles.Filter)
+	m.list.Paginator.ActiveDot = m.list.Styles.ActivePaginationDot.String()
+	m.list.Paginator.InactiveDot = m.list.Styles.InactivePaginationDot.String()
 }
 
 func (m *Model) SetSize(width, height int) {

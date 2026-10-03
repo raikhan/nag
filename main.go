@@ -5,7 +5,7 @@ import (
 	"os"
 	"runtime/debug"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/oronbz/nag/internal/reminders"
 	"github.com/oronbz/nag/internal/ui"
 )
@@ -43,7 +43,7 @@ func main() {
 	}
 
 	model := ui.NewModel(client)
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

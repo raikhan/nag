@@ -5,10 +5,10 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/oronbz/nag/internal/reminders"
 	"github.com/oronbz/nag/internal/ui/commands"
 	"github.com/oronbz/nag/internal/ui/components/dialog"
@@ -77,6 +77,7 @@ func (m Model) Init() tea.Cmd {
 		commands.FetchLists(m.client),
 		commands.AutoRefreshTick(),
 		m.spinner.Tick,
+		func() tea.Msg { return tea.RequestBackgroundColor() },
 	)
 }
 
@@ -84,6 +85,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		isDark := msg.IsDark()
+		m.listPanel.SetDarkBackground(isDark)
+		m.reminderPanel.SetDarkBackground(isDark)
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -95,23 +102,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.createDlg.Visible() || m.createListDlg.Visible() || m.confirmDlg.Visible() || m.helpOverlay.Visible() {
 			break
 		}
-		target, ok := m.panelForMouse(msg.X, msg.Y)
+		mouse := msg.Mouse()
+		target, ok := m.panelForMouse(mouse.X, mouse.Y)
 		if !ok {
 			break
 		}
-		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			m.setFocus(target)
-			return m, nil
-		}
-		if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
-			var cmd tea.Cmd
-			switch target {
-			case PanelLists:
-				m.listPanel, cmd = m.listPanel.Update(msg)
-			case PanelReminders:
-				m.reminderPanel, cmd = m.reminderPanel.Update(msg)
+		switch msg := msg.(type) {
+		case tea.MouseClickMsg:
+			if msg.Button == tea.MouseLeft {
+				m.setFocus(target)
+				return m, nil
 			}
-			return m, cmd
+		case tea.MouseWheelMsg:
+			if msg.Button == tea.MouseWheelUp || msg.Button == tea.MouseWheelDown {
+				var cmd tea.Cmd
+				switch target {
+				case PanelLists:
+					m.listPanel, cmd = m.listPanel.Update(msg)
+				case PanelReminders:
+					m.reminderPanel, cmd = m.reminderPanel.Update(msg)
+				}
+				return m, cmd
+			}
 		}
 
 	case clearInfoMsg:
@@ -321,7 +333,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if m.helpOverlay.Visible() {
-		if keyMsg, ok := msg.(tea.KeyMsg); ok {
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 			if key.Matches(keyMsg, Keys.Help) || key.Matches(keyMsg, Keys.Escape) || key.Matches(keyMsg, Keys.Quit) {
 				m.helpOverlay.Toggle()
 				return m, nil
@@ -334,7 +346,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Global keys (skip when filtering)
 	filtering := m.listPanel.Filtering() || m.reminderPanel.Filtering()
-	if keyMsg, ok := msg.(tea.KeyMsg); ok && !filtering {
+	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && !filtering {
 		switch {
 		case key.Matches(keyMsg, Keys.Quit):
 			return m, tea.Quit
@@ -398,7 +410,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m Model) View() string {
+func (m Model) viewContent() string {
 	if !m.ready {
 		return m.spinner.View() + " Loading..."
 	}
@@ -422,6 +434,13 @@ func (m Model) View() string {
 
 	panels := lipgloss.JoinHorizontal(lipgloss.Top, listsPanel, remindersPanel)
 	return lipgloss.JoinVertical(lipgloss.Left, panels, m.statusBar.View())
+}
+
+func (m Model) View() tea.View {
+	v := tea.NewView(m.viewContent())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
 }
 
 func (m Model) renderPanel(content string, width, height int, focused bool) string {
