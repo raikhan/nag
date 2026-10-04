@@ -175,7 +175,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case delayedRefreshMsg:
-		m.aceExit()
 		return m, m.fetchSelectedReminders()
 
 	case openFailedMsg:
@@ -192,7 +191,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.aceExit()
 
 	case messages.ListsLoadedMsg:
-		m.aceExit()
+		// A poll that returns the same sidebar rows changes nothing on
+		// screen, so an in-flight ace jump survives it.
+		if !listsEqual(m.listPanel.Lists(), msg.Lists) {
+			m.aceExit()
+		}
 		m.statusBar.ClearLoading()
 		if msg.Err != nil {
 			m.statusBar.SetError(msg.Err.Error())
@@ -210,8 +213,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case messages.RemindersLoadedMsg:
-		// Ace mode ends whenever reminder data may change.
-		m.aceExit()
 		// Ignore results for a list other than the selected one so a slow
 		// older fetch cannot clobber the display, loading or focus state.
 		if m.selectedList == nil || msg.ListID != m.selectedList.ID {
@@ -237,6 +238,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// Only a real change to the visible rows ends the ace jump; the
+		// unchanged-poll early return above keeps it alive.
+		m.aceExit()
 		m.reminderPanel.SetReminders(msg.Reminders)
 		m.resize()
 		if m.pendingFocus {
@@ -292,7 +296,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case messages.TickMsg:
-		m.aceExit()
 		batch := []tea.Cmd{commands.AutoRefreshTick(), commands.FetchLists(m.client)}
 		if cmd := m.fetchSelectedReminders(); cmd != nil {
 			batch = append(batch, cmd)
@@ -440,8 +443,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(keyMsg, m.keys.Bind("global", "previous_panel")):
 			m.cycleFocus(-1)
 			return m, nil
-		case key.Matches(keyMsg, m.keys.Bind("global", "select")):
-			return m, m.handleEnter()
+		case key.Matches(keyMsg, m.keys.Bind("global", "focus_left")):
+			m.setFocus(PanelLists)
+			return m, nil
+		case key.Matches(keyMsg, m.keys.Bind("global", "focus_right")):
+			m.setFocus(PanelReminders)
+			return m, nil
+		case m.focusedPanel == PanelLists && key.Matches(keyMsg, m.keys.Bind("list", "select")):
+			return m, m.syncSelectedList(true)
 		case key.Matches(keyMsg, m.keys.Bind("global", "toggle_complete")):
 			return m, m.handleToggleComplete()
 		case key.Matches(keyMsg, m.keys.Bind("global", "new")):
@@ -612,12 +621,18 @@ func (m *Model) syncSelectedList(focusAfterLoad bool) tea.Cmd {
 	return m.fetchSelectedReminders()
 }
 
-func (m *Model) handleEnter() tea.Cmd {
-	switch m.focusedPanel {
-	case PanelLists:
-		return m.syncSelectedList(true)
+// listsEqual compares the identity and label of each sidebar row. Reminder
+// counts move on every completion and must not cancel an in-flight ace jump.
+func listsEqual(a, b []reminders.ReminderList) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	return nil
+	for i := range a {
+		if a[i].ID != b[i].ID || a[i].Title != b[i].Title || a[i].Kind != b[i].Kind {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *Model) fetchSelectedReminders() tea.Cmd {

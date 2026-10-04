@@ -1,6 +1,7 @@
 package dialog
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -60,7 +61,6 @@ const (
 const (
 	endNever = iota
 	endOnDate
-	endAfter
 )
 
 const (
@@ -99,7 +99,6 @@ type RecurrenceModel struct {
 	yearlyMonths []bool // January..December
 	yearlyOn     bool   // false = Same day
 	endMode      int
-	endCount     string
 	endPicker    datepickerModel
 	endDateOn    bool
 
@@ -162,7 +161,6 @@ type draftState struct {
 	dayKindWd    eventkit.Weekday
 	yearlyOn     bool
 	endMode      int
-	endCount     string
 	endDateOn    bool
 	endText      string
 	focusIndex   int
@@ -188,7 +186,6 @@ func (m *RecurrenceModel) snapshot() {
 		dayKindWd:    m.dayKindWd,
 		yearlyOn:     m.yearlyOn,
 		endMode:      m.endMode,
-		endCount:     m.endCount,
 		endDateOn:    m.endDateOn,
 		endText:      m.endPicker.Value(),
 		focusIndex:   m.focusIndex,
@@ -208,7 +205,6 @@ func (m *RecurrenceModel) restore() {
 	m.dayKindWd = m.saved.dayKindWd
 	m.yearlyOn = m.saved.yearlyOn
 	m.endMode = m.saved.endMode
-	m.endCount = m.saved.endCount
 	m.endDateOn = m.saved.endDateOn
 	m.focusIndex = m.saved.focusIndex
 	m.banner = ""
@@ -249,6 +245,9 @@ func (m *RecurrenceModel) Show(rules []eventkit.RecurrenceRule, now, base time.T
 	m.resetDraft()
 	if prefilled := prefillFields(rules); prefilled != nil {
 		m.applyPrefill(*prefilled)
+		if prefilled.droppedCount > 0 {
+			m.banner = fmt.Sprintf("ends after %d occurrences is no longer supported; the repeat now ends on Never", prefilled.droppedCount)
+		}
 	} else if len(rules) > 0 {
 		m.banner = "Applying replaces the existing custom schedule"
 	} else {
@@ -271,7 +270,6 @@ func (m *RecurrenceModel) resetDraft() {
 	m.monthlyMode = monthlyEach
 	m.yearlyOn = false
 	m.endMode = endNever
-	m.endCount = ""
 	m.endDateOn = false
 	m.banner = ""
 	anchor := m.anchor()
@@ -322,8 +320,6 @@ func (m *RecurrenceModel) applyPrefill(p prefill) {
 			m.endPicker.SetValue(p.end.Local().Format("2006-01-02"))
 			m.endDateOn = true
 		}
-	case endAfter:
-		m.endCount = strconv.Itoa(p.count)
 	}
 	switch p.frequency {
 	case eventkit.FrequencyWeekly:
@@ -369,19 +365,19 @@ func (m *RecurrenceModel) applyPrefill(p prefill) {
 
 // prefill describes a draft decoded from an original rule.
 type prefill struct {
-	frequency eventkit.RecurrenceFrequency
-	interval  int
-	weekly    []int // Mon..Sun indexes
-	each      bool
-	days      []int
-	ordinal   int
-	kind      dayKind
-	weekday   eventkit.Weekday
-	months    []int
-	patternOn bool
-	endMode   int
-	end       time.Time
-	count     int
+	frequency    eventkit.RecurrenceFrequency
+	interval     int
+	weekly       []int // Mon..Sun indexes
+	each         bool
+	days         []int
+	ordinal      int
+	kind         dayKind
+	weekday      eventkit.Weekday
+	months       []int
+	patternOn    bool
+	endMode      int
+	end          time.Time
+	droppedCount int
 }
 
 // prefillFields decodes exactly one supported rule into editor values.
@@ -396,8 +392,7 @@ func prefillFields(rules []eventkit.RecurrenceRule) *prefill {
 			p.endMode = endOnDate
 			p.end = *r.End.EndDate
 		} else if r.End.OccurrenceCount > 0 {
-			p.endMode = endAfter
-			p.count = r.End.OccurrenceCount
+			p.droppedCount = r.End.OccurrenceCount
 		}
 	}
 	p.frequency = r.Frequency
@@ -518,11 +513,6 @@ func (m RecurrenceModel) draftRules() []eventkit.RecurrenceRule {
 	case endOnDate:
 		t := endOfDayLocal(m.endPickerValue())
 		rule.End = &eventkit.RecurrenceEnd{EndDate: &t}
-	case endAfter:
-		n, err := strconv.Atoi(strings.TrimSpace(m.endCount))
-		if err == nil && n >= 1 {
-			rule.End = &eventkit.RecurrenceEnd{OccurrenceCount: n}
-		}
 	}
 	return []eventkit.RecurrenceRule{rule}
 }
@@ -788,7 +778,6 @@ func (m RecurrenceModel) chooserOptions(kind fieldKind) []selectorOption {
 		return []selectorOption{
 			{ID: "0", Label: "Never"},
 			{ID: "1", Label: "On date"},
-			{ID: "2", Label: "After occurrences"},
 		}
 	}
 	return nil
@@ -886,20 +875,26 @@ func (m RecurrenceModel) focusedField() fieldKind {
 // editor steps to the field after the one just finished; fields() changes
 // length with frequency/mode, so the finished field is re-located by kind
 // before stepping. With follow off the choice leaves the cursor alone.
-func (m *RecurrenceModel) finishChoiceField(ids []string) {
+func (m *RecurrenceModel) finishChoiceField(ids []string) tea.Cmd {
 	kind := m.focusedField()
 	m.applyChooserResult(ids)
 	if !m.follow {
-		return
+		return nil
 	}
 	fs := m.fields()
 	for i, f := range fs {
 		if f == kind {
-			m.focusIndex = mod(i+1, len(fs))
+			// The last field ends the walk: apply instead of wrapping back
+			// to the top, so finishing needs no Ctrl-S.
+			if i == len(fs)-1 {
+				return m.apply()
+			}
+			m.focusIndex = i + 1
 			break
 		}
 	}
 	m.focusField()
+	return nil
 }
 
 // setFrequency changes frequency, retaining interval and end while
@@ -969,9 +964,8 @@ func (m *RecurrenceModel) setEndMode(mode int) {
 		return
 	}
 	m.endMode = mode
-	// On date / After occurrences require explicit entry: no defaults.
+	// On date requires explicit entry: no default.
 	m.endPicker.SetValue("")
-	m.endCount = ""
 	m.endDateOn = false
 	for i, f := range m.fields() {
 		if f == fEndValue {
@@ -1026,12 +1020,6 @@ func (m *RecurrenceModel) apply() tea.Cmd {
 			m.errText = "End date cannot be before the due date"
 			return nil
 		}
-	case endAfter:
-		n, err := strconv.Atoi(strings.TrimSpace(m.endCount))
-		if err != nil || n < 1 {
-			m.errText = "Occurrences must be at least 1"
-			return nil
-		}
 	}
 	rules := m.draftRules()
 	m.errText = ""
@@ -1068,8 +1056,7 @@ func (m RecurrenceModel) Update(msg tea.Msg) (RecurrenceModel, tea.Cmd) {
 	case selectorSelectedMsg:
 		m.purpose = spNone
 		m.selector.Close()
-		m.finishChoiceField(msg.IDs)
-		return m, nil
+		return m, m.finishChoiceField(msg.IDs)
 	case selectorCancelledMsg:
 		m.purpose = spNone
 		m.selector.Close()
@@ -1096,6 +1083,24 @@ func (m RecurrenceModel) Update(msg tea.Msg) (RecurrenceModel, tea.Cmd) {
 			m.openChooser(fs[m.focusIndex])
 			return m, nil
 		}
+		// With follow armed, Enter on a plain field walks to the next one
+		// so a walk covers every option, and applies from the last. It
+		// sits ahead of dialog.submit, which also binds Enter; Ctrl-S
+		// still applies from anywhere below.
+		if m.follow && m.focusIndex < len(fs) && !isEditorChoiceField(fs[m.focusIndex]) &&
+			key.Matches(msg, m.keys.Bind("field", "confirm")) {
+			if m.focusIndex < len(fs)-1 {
+				m.focusIndex++
+				m.focusField()
+				return m, nil
+			}
+			cmd := m.apply()
+			if cmd != nil {
+				m.visible = false
+				m.errText = ""
+			}
+			return m, cmd
+		}
 		switch {
 		case key.Matches(msg, m.keys.Bind("dialog", "cancel")):
 			m.visible = false
@@ -1115,17 +1120,6 @@ func (m RecurrenceModel) Update(msg tea.Msg) (RecurrenceModel, tea.Cmd) {
 			m.focusIndex = mod(m.focusIndex-1, len(m.fields()))
 			m.focusField()
 			return m, nil
-		case key.Matches(msg, m.keys.Bind("choice_field", "open")):
-			// Enter on numeric/date fields applies a valid draft.
-			if m.focusIndex < len(fs) {
-				cmd := m.apply()
-				if cmd != nil {
-					m.visible = false
-					m.errText = ""
-				}
-				return m, cmd
-			}
-			return m, nil
 		}
 
 		// End-date picker gets calendar navigation and typing.
@@ -1134,19 +1128,11 @@ func (m RecurrenceModel) Update(msg tea.Msg) (RecurrenceModel, tea.Cmd) {
 			m.endPicker, cmd = m.endPicker.Update(msg)
 			return m, cmd
 		}
-		// Typing on interval/count fields.
-		if m.focusIndex < len(fs) {
-			switch fs[m.focusIndex] {
-			case fInterval:
-				var cmd tea.Cmd
-				m.intervalIn, cmd = m.intervalIn.Update(msg)
-				return m, cmd
-			case fEndValue:
-				if m.endMode == endAfter {
-					m.editEndCount(msg)
-					return m, nil
-				}
-			}
+		// Typing on the interval field.
+		if m.focusIndex < len(fs) && fs[m.focusIndex] == fInterval {
+			var cmd tea.Cmd
+			m.intervalIn, cmd = m.intervalIn.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 	}
@@ -1155,27 +1141,6 @@ func (m RecurrenceModel) Update(msg tea.Msg) (RecurrenceModel, tea.Cmd) {
 
 func mod(n, k int) int {
 	return ((n % k) + k) % k
-}
-
-// editEndCount edits the occurrence-count input as plain digits.
-func (m *RecurrenceModel) editEndCount(msg tea.KeyPressMsg) {
-	if msg.Code == tea.KeyBackspace {
-		r := []rune(m.endCount)
-		if len(r) > 0 {
-			m.endCount = string(r[:len(r)-1])
-		}
-		return
-	}
-	if len(msg.Text) > 0 {
-		for _, r := range msg.Text {
-			if r < '0' || r > '9' {
-				return
-			}
-		}
-		if len(m.endCount) < 9 {
-			m.endCount += msg.Text
-		}
-	}
 }
 
 func isEditorChoiceField(kind fieldKind) bool {
@@ -1347,16 +1312,9 @@ func (m RecurrenceModel) fieldValue(f fieldKind) string {
 		switch m.endMode {
 		case endOnDate:
 			return "On date"
-		case endAfter:
-			return "After occurrences"
 		default:
 			return "Never"
 		}
-	case fEndValue:
-		if m.endMode == endOnDate {
-			return ""
-		}
-		return strings.TrimSpace(m.endCount)
 	}
 	return ""
 }

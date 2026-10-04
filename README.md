@@ -14,7 +14,7 @@ A LazyGit-style terminal UI for [Apple Reminders](https://support.apple.com/guid
 - **Two-panel layout** — lists sidebar + reminders
 - **Smart lists** — Today (includes overdue) and Scheduled views
 - **Vim-style navigation** — `j`/`k`, `g`/`G`, `Ctrl-d`/`Ctrl-u`
-- **Create reminders** — title, due date with time, priority
+- **Create reminders** — title, due date with time, early alert, priority
 - **Complete/uncomplete** — toggle with Space, 2s grace period to undo
 - **Delete** — with confirmation prompt
 - **Open in Reminders** — jump to the reminder in Apple Reminders
@@ -69,8 +69,10 @@ defaults, and `nag help` to list the bindings currently in effect.
 | `j` / `k`, `↑` / `↓` | Navigate (never lands on a list separator) |
 | `Enter` | Select list |
 | `Tab` / `Shift-Tab` | Switch panel |
+| `h` / `l` | Move focus to the lists / reminders panel |
 | `g` / `G` | Jump to top / bottom |
 | `Ctrl-u` / `Ctrl-d` | Half page up / down |
+| `←` / `→`, `PgUp` / `PgDn`, `b` / `u`, `f` | Page the focused list |
 | `/` | Filter / search |
 | `z` | Ace jump to any visible list or reminder row |
 | Left click | Focus panel |
@@ -82,7 +84,7 @@ defaults, and `nag help` to list the bindings currently in effect.
 |-----|--------|
 | `Space` / `x` | Toggle reminder complete |
 | `n` | New reminder / list |
-| `e` | Edit reminder / list |
+| `Enter` / `e` | Edit reminder / list (`Enter` edits a reminder; on the sidebar it selects the list) |
 | `d` | Delete reminder / list |
 | `o` | Open in Apple Reminders |
 | `s` | Cycle sort order |
@@ -91,13 +93,13 @@ defaults, and `nag help` to list the bindings currently in effect.
 
 ### Reminder form
 
-The create/edit form keeps all six fields visible beside the active editor.
+The create/edit form keeps all seven fields visible beside the active editor.
 
 | Key | Action |
 |-----|--------|
 | `Tab` / `j` | Next field (browsing only — disabled while a field editor is open) |
 | `Shift-Tab` / `k` | Previous field (browsing only) |
-| `t` `n` `d` `i` `p` `r` | Jump to Title / Notes / Date / Time / Priority / Recurrence and edit it |
+| `t` `n` `d` `i` `a` `p` `r` | Jump to Title / Notes / Date / Time / Remind me / Priority / Recurrence and edit it |
 | `Enter` | Edit selected field / finish the open field |
 | `Ctrl-J` | New line in the Notes editor |
 | `Ctrl-O` | Edit the Notes value in `$EDITOR` |
@@ -139,11 +141,24 @@ while the date field is focused.
 The Time field takes clock times: `6p`, `6pm`, `14:13`, `1413`, `615p`,
 `12am`, `12pm`, `9:05`, … A blank time with a date means 09:00 local.
 
+### Remind me
+
+`Remind me` writes a real EventKit alert on the reminder, so it shows up in
+Apple Reminders. It needs a due date — the row refuses to open without one and
+clearing the date clears the alert. Choose `At due time`, a lead time from 5
+minutes to 1 day, or `None`. A lead time is stored as a relative alarm, so it
+keeps following the due date when it moves.
+
+Apple Reminders itself only offers `Never` and `On date` as repeat end
+conditions, so nag's `Custom…` editor offers the same two. A reminder whose rule
+still ends after a fixed occurrence count opens on `Never` with a banner
+saying so; applying a `Custom` edit then rewrites it to `Never`.
+
 ### Recurrence
 
 Daily, weekly, monthly, yearly and common presets via the fuzzy selector; the
 `Custom…` editor covers intervals, weekday/day-of-month patterns and end
-conditions, and round-trips natively with Apple Reminders.
+conditions (`Never` or `On date`), and round-trips natively with Apple Reminders.
 
 ## Layout
 

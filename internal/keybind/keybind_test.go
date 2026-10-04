@@ -55,6 +55,64 @@ func TestCompileOverridesAndDisable(t *testing.T) {
 	}
 }
 
+// TestEditMatchesEnterAndE pins the default edit aliases: Enter is the
+// primary key and e remains an alias for both.
+func TestEditMatchesEnterAndE(t *testing.T) {
+	m, err := Compile(Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := m.Bind("global", "edit")
+	if !key.Matches(tea.KeyPressMsg{Code: tea.KeyEnter}, b) {
+		t.Fatal("global.edit should match Enter")
+	}
+	if !key.Matches(tea.KeyPressMsg{Code: 'e', Text: "e"}, b) {
+		t.Fatal("global.edit should match e")
+	}
+	if !key.Matches(tea.KeyPressMsg{Code: tea.KeyEnter}, m.Bind("list", "select")) {
+		t.Fatal("list.select should match Enter")
+	}
+}
+
+// TestHLFocusesPanelsNotPages pins the split: h/l move between panels, and
+// paging keeps its own keys.
+func TestHLFocusesPanelsNotPages(t *testing.T) {
+	m, err := Compile(Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !key.Matches(tea.KeyPressMsg{Code: 'h', Text: "h"}, m.Bind("global", "focus_left")) {
+		t.Fatal("global.focus_left should match h")
+	}
+	if !key.Matches(tea.KeyPressMsg{Code: 'l', Text: "l"}, m.Bind("global", "focus_right")) {
+		t.Fatal("global.focus_right should match l")
+	}
+	prev := m.Aliases("list", "previous_page")
+	next := m.Aliases("list", "next_page")
+	for _, alias := range []string{"h", "l"} {
+		for _, got := range append(append([]string{}, prev...), next...) {
+			if got == alias {
+				t.Fatalf("page key %q must not also page: it moves panels", alias)
+			}
+		}
+	}
+	if !contains(prev, "pgup") || !contains(next, "pgdown") {
+		t.Fatalf("paging lost its arrow/pgup keys: prev=%v next=%v", prev, next)
+	}
+	if !contains(prev, "left") || !contains(next, "right") {
+		t.Fatalf("paging lost the arrow keys: prev=%v next=%v", prev, next)
+	}
+}
+
+func contains(s []string, want string) bool {
+	for _, v := range s {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCompileRejectsInvalid(t *testing.T) {
 	cases := []struct {
 		name string

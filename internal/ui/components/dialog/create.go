@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,10 +51,11 @@ type chooserPurpose int
 const (
 	chooserNone chooserPurpose = iota
 	chooserPriority
+	chooserAlarm
 	chooserRecurrence
 )
 
-// formField identifies one of the six main form rows.
+// formField identifies one of the seven main form rows.
 type formField int
 
 const (
@@ -61,11 +63,20 @@ const (
 	fieldNotes
 	fieldDate
 	fieldTime
+	fieldAlarm
 	fieldPriority
 	fieldRecurrence
 )
 
-const formFieldCount = 6
+const formFieldCount = 7
+
+// alarmKind is the shape of the Remind me row's committed value.
+const (
+	alarmNone = iota
+	alarmAtDue
+	alarmBefore
+	alarmCustom
+)
 
 const noField formField = -1
 
@@ -78,13 +89,18 @@ const (
 )
 
 type CreateModel struct {
-	keys        keybind.Map
-	titleInput  textinput.Model
-	notesInput  textarea.Model
-	timeInput   textinput.Model
-	picker      datepickerModel
-	priority    int
-	recurrence  []eventkit.RecurrenceRule
+	keys       keybind.Map
+	titleInput textinput.Model
+	notesInput textarea.Model
+	timeInput  textinput.Model
+	picker     datepickerModel
+	priority   int
+	recurrence []eventkit.RecurrenceRule
+	// Remind me state, seeded from the reminder's EventKit alarms.
+	alarmKind   int
+	alarmOffset time.Duration
+	alarmAt     *time.Time
+	origAlarms  []reminders.Alarm
 	selector    selectorModel
 	purpose     chooserPurpose
 	recurrenceE RecurrenceModel
@@ -244,6 +260,24 @@ func (m *CreateModel) showEditAt(r reminders.Reminder, now time.Time) {
 		m.origDue = &due
 	}
 	m.priority = r.Priority
+	// Seed the row from the reminder's first alarm: EventKit returns the
+	// alerts nag can write, so the first is the whole story.
+	m.origAlarms = append([]reminders.Alarm(nil), r.Alarms...)
+	if len(r.Alarms) > 0 {
+		a := r.Alarms[0]
+		due, derr := m.composeDue()
+		switch {
+		case a.RelativeOffset < 0:
+			m.alarmKind = alarmBefore
+			m.alarmOffset = -a.RelativeOffset
+		case a.AbsoluteDate != nil && derr == nil && due != nil && sameSecond(*a.AbsoluteDate, *due):
+			m.alarmKind = alarmAtDue
+		case a.AbsoluteDate != nil:
+			at := *a.AbsoluteDate
+			m.alarmKind = alarmCustom
+			m.alarmAt = &at
+		}
+	}
 	m.setOrigRules(r.RecurrenceRules)
 	m.rebuildPane()
 }
@@ -261,6 +295,10 @@ func (m *CreateModel) resetFormState() {
 	m.priority = reminders.PriorityNone
 	m.recurrence = nil
 	m.origRules = nil
+	m.alarmKind = alarmNone
+	m.alarmOffset = 0
+	m.alarmAt = nil
+	m.origAlarms = nil
 	m.committedDate = ""
 	m.committedTime = ""
 	m.timeClock = nil
@@ -319,6 +357,13 @@ func isSimpleField(f formField) bool {
 
 // openField begins editing a field. Choice fields open the shared selector.
 func (m *CreateModel) openField(f formField) {
+	// The alert is derived from the due date, so the row is inert without
+	// one. Guarding before switching modes leaves browsing untouched and
+	// makes the row explain itself.
+	if f == fieldAlarm && m.committedDate == "" {
+		m.errText = "Set a date to use an early reminder"
+		return
+	}
 	m.mode = formEditing
 	m.active = f
 	m.blurAll()
@@ -336,6 +381,10 @@ func (m *CreateModel) openField(f formField) {
 		m.editSnapshot = m.timeInput.Value()
 		m.timeInput.Focus()
 		m.updateTimeDraft()
+	case fieldAlarm:
+		m.choiceOwner = fieldAlarm
+		m.choiceOpen = true
+		m.openOuterChooser(fieldAlarm, "")
 	case fieldPriority:
 		m.choiceOwner = fieldPriority
 		m.choiceOpen = true
@@ -345,6 +394,17 @@ func (m *CreateModel) openField(f formField) {
 		m.choiceOpen = true
 		m.openOuterChooser(fieldRecurrence, "")
 	}
+}
+
+// nextWalkField returns the row a follow walk moves to from f, skipping the
+// Remind me row while no date is committed. The row is inert then, so
+// stopping on it would strand the walk on an error.
+func (m *CreateModel) nextWalkField(f formField) formField {
+	next := (f + 1) % formFieldCount
+	if next == fieldAlarm && m.committedDate == "" {
+		next = (next + 1) % formFieldCount
+	}
+	return next
 }
 
 // closeField leaves editing and returns to browsing the same row.
@@ -362,7 +422,7 @@ func (m *CreateModel) advanceAfter(f formField) {
 	if !m.follow || f == fieldRecurrence {
 		return
 	}
-	next := (f + 1) % formFieldCount
+	next := m.nextWalkField(f)
 	m.selected = next
 	m.openField(next)
 }
@@ -444,6 +504,11 @@ func (m *CreateModel) commitField(f formField) bool {
 			m.timeInput.SetValue("")
 			m.timeDraft = nil
 			m.timeDraftErr = ""
+			// An alarm without a due date is not representable, and the
+			// row is inert in that state, so clearing the date clears it.
+			m.alarmKind = alarmNone
+			m.alarmOffset = 0
+			m.alarmAt = nil
 			m.errText = ""
 			return true
 		}
@@ -615,6 +680,132 @@ func priorityOptions() []selectorOption {
 	}
 }
 
+// alarmPresets are the Remind me chooser rows. Offsets are relative alarms
+// (they follow the due date); "At due time" is materialized as an absolute
+// alarm because EventKit drops a zero relative offset.
+var alarmPresets = []struct{ id, label string }{
+	{"none", "None"},
+	{"attime", "At due time"},
+	{"5m", "5 minutes before"},
+	{"10m", "10 minutes before"},
+	{"15m", "15 minutes before"},
+	{"30m", "30 minutes before"},
+	{"1h", "1 hour before"},
+	{"2h", "2 hours before"},
+	{"1d", "1 day before"},
+}
+
+func alarmOptions() []selectorOption {
+	opts := make([]selectorOption, 0, len(alarmPresets))
+	for _, p := range alarmPresets {
+		opts = append(opts, selectorOption{ID: p.id, Label: p.label})
+	}
+	return opts
+}
+
+// alarmPresetOffset maps a preset ID to its lead time, reporting whether the
+// ID is a known offset preset.
+func alarmPresetOffset(id string) (time.Duration, bool) {
+	switch id {
+	case "5m":
+		return 5 * time.Minute, true
+	case "10m":
+		return 10 * time.Minute, true
+	case "15m":
+		return 15 * time.Minute, true
+	case "30m":
+		return 30 * time.Minute, true
+	case "1h":
+		return time.Hour, true
+	case "2h":
+		return 2 * time.Hour, true
+	case "1d":
+		return 24 * time.Hour, true
+	}
+	return 0, false
+}
+
+// alarmChoiceID preselects the chooser row matching the current value.
+func alarmChoiceID(m CreateModel) string {
+	if m.alarmKind == alarmCustom {
+		return "none"
+	}
+	if m.alarmKind == alarmAtDue {
+		return "attime"
+	}
+	if m.alarmKind == alarmBefore {
+		for _, p := range alarmPresets {
+			if off, ok := alarmPresetOffset(p.id); ok && off == m.alarmOffset {
+				return p.id
+			}
+		}
+	}
+	return "none"
+}
+
+// alarmFromID commits a chooser row into the row's state.
+func alarmFromID(id string) (kind int, offset time.Duration) {
+	if id == "attime" {
+		return alarmAtDue, 0
+	}
+	if off, ok := alarmPresetOffset(id); ok {
+		return alarmBefore, off
+	}
+	return alarmNone, 0
+}
+
+// alarmLabel renders the Remind me row: None, a preset label for a known
+// offset, "1h30m before" style text for an unknown offset, or "At Jan 2
+// 15:04" for an absolute alarm that is not the due instant.
+func (m CreateModel) alarmLabel() string {
+	switch m.alarmKind {
+	case alarmAtDue:
+		return "At due time"
+	case alarmBefore:
+		for _, p := range alarmPresets {
+			if off, ok := alarmPresetOffset(p.id); ok && off == m.alarmOffset {
+				return p.label
+			}
+		}
+		if m.alarmOffset%time.Hour == 0 && m.alarmOffset > 0 {
+			h := int(m.alarmOffset / time.Hour)
+			if h == 1 {
+				return "1 hour before"
+			}
+			return strconv.Itoa(h) + " hours before"
+		}
+		return m.alarmOffset.String() + " before"
+	case alarmCustom:
+		if m.alarmAt != nil {
+			return "At " + m.alarmAt.Format("Jan 2 15:04")
+		}
+	}
+	return "None"
+}
+
+// alarmInput turns the Remind me row into the EventKit alarms to write. It
+// returns nil when the row is "None".
+func (m CreateModel) alarmInput(due *time.Time) []reminders.Alarm {
+	switch m.alarmKind {
+	case alarmAtDue:
+		if due == nil {
+			return nil
+		}
+		return []reminders.Alarm{{AbsoluteDate: due}}
+	case alarmBefore:
+		if m.alarmOffset <= 0 {
+			return nil
+		}
+		return []reminders.Alarm{{RelativeOffset: -m.alarmOffset}}
+	case alarmCustom:
+		if m.alarmAt == nil {
+			return nil
+		}
+		return []reminders.Alarm{{AbsoluteDate: m.alarmAt}}
+	}
+	return nil
+}
+
 func priorityFromID(id string) int {
 	switch id {
 	case "low":
@@ -661,6 +852,8 @@ func (m CreateModel) fieldLabel(f formField) string {
 		return "Date"
 	case fieldTime:
 		return "Time"
+	case fieldAlarm:
+		return "Remind me"
 	case fieldPriority:
 		return "Priority"
 	default:
@@ -678,6 +871,8 @@ func (m CreateModel) jumpAction(f formField) string {
 		return "jump_date"
 	case fieldTime:
 		return "jump_time"
+	case fieldAlarm:
+		return "jump_alarm"
 	case fieldPriority:
 		return "jump_priority"
 	default:
@@ -723,6 +918,8 @@ func (m CreateModel) summaryValue(f formField) string {
 			return clock.String() + " " + m.zoneAbbrev()
 		}
 		return "None"
+	case fieldAlarm:
+		return m.alarmLabel()
 	case fieldPriority:
 		return priorityLabel(m.priority)
 	default:
@@ -788,6 +985,14 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 		case chooserPriority:
 			if len(msg.IDs) == 1 {
 				m.priority = priorityFromID(msg.IDs[0])
+			}
+			m.finishChoice(true)
+		case chooserAlarm:
+			if len(msg.IDs) == 1 {
+				m.alarmKind, m.alarmOffset = alarmFromID(msg.IDs[0])
+				if m.alarmKind != alarmCustom {
+					m.alarmAt = nil
+				}
 			}
 			m.finishChoice(true)
 		case chooserRecurrence:
@@ -878,6 +1083,10 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 			case key.Matches(keyMsg, m.keys.Bind("form", "jump_time")):
 				m.selected = fieldTime
 				m.openField(fieldTime)
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Bind("form", "jump_alarm")):
+				m.selected = fieldAlarm
+				m.openField(fieldAlarm)
 				return m, nil
 			case key.Matches(keyMsg, m.keys.Bind("form", "jump_priority")):
 				m.selected = fieldPriority
@@ -971,7 +1180,7 @@ func (m *CreateModel) finishChoice(confirmed bool) {
 	if !confirmed || owner == noField || !m.follow || owner == fieldRecurrence {
 		return
 	}
-	next := (owner + 1) % formFieldCount
+	next := m.nextWalkField(owner)
 	m.selected = next
 	m.openField(next)
 }
@@ -981,6 +1190,9 @@ func (m *CreateModel) openOuterChooser(f formField, seed string) {
 	if f == fieldPriority {
 		m.purpose = chooserPriority
 		m.selector.Open(priorityOptions(), []string{priorityID(m.priority)}, false)
+	} else if f == fieldAlarm {
+		m.purpose = chooserAlarm
+		m.selector.Open(alarmOptions(), []string{alarmChoiceID(*m)}, false)
 	} else {
 		m.purpose = chooserRecurrence
 		m.selector.Open(presetOptions(), []string{recurrenceChoiceID(m.recurrence)}, false)
@@ -1059,10 +1271,18 @@ func (m *CreateModel) trySubmit() tea.Cmd {
 		DueDate:         due,
 		Priority:        m.priority,
 		RecurrenceRules: m.recurrence,
+		Alarms:          m.alarmInput(due),
 	}
+
 	return func() tea.Msg {
 		return CreateSubmitMsg{Input: input}
 	}
+}
+
+// sameSecond compares two instants at second precision, the resolution
+// EventKit stores alarms with.
+func sameSecond(a, b time.Time) bool {
+	return a.Truncate(time.Second).Equal(b.Truncate(time.Second))
 }
 
 func (m CreateModel) buildEditCmd(title string, due *time.Time, clearDue bool) tea.Cmd {
@@ -1092,6 +1312,16 @@ func (m CreateModel) buildEditCmd(title string, due *time.Time, clearDue bool) t
 		rules := make([]eventkit.RecurrenceRule, 0, len(m.recurrence))
 		rules = append(rules, m.recurrence...)
 		input.RecurrenceRules = &rules
+	}
+	// The alarm is anchored to the effective due instant, which is the
+	// composed value even when the due patch itself is empty.
+	alarmDue, err := m.composeDue()
+	if err != nil {
+		alarmDue = nil
+	}
+	if !reminders.AlarmsEqual(m.alarmInput(alarmDue), m.origAlarms) {
+		alarms := m.alarmInput(alarmDue)
+		input.Alarms = &alarms
 	}
 
 	return func() tea.Msg {
@@ -1131,9 +1361,9 @@ func (m *CreateModel) rebuildPane() {
 	}
 	bodyH := contentH - headerH - footerH - errH
 	wide := contentW >= 70
-	minBody := 6
+	minBody := formFieldCount
 	if !wide {
-		minBody = 6 + 1 + 3 // summaries + gap + editor rows
+		minBody = formFieldCount + 1 + 3 // summaries + gap + editor rows
 	}
 	if bodyH < minBody {
 		m.tooSmall = true
@@ -1165,10 +1395,10 @@ func (m *CreateModel) rebuildPane() {
 	// Stacked: compact summaries above the active editor.
 	m.paneW, m.paneH = contentW, bodyH
 	leftLines := m.summaryLines(contentW)
-	editor, editorFocus := m.paneContent(contentW, bodyH-7)
+	editor, editorFocus := m.paneContent(contentW, bodyH-(formFieldCount+1))
 	summaryBlock := strings.Join(leftLines, "\n") + "\n\n"
 	right = summaryBlock + editor
-	focus = editorFocus + 7
+	focus = editorFocus + formFieldCount + 1
 	m.renderBody(style, right, bodyH, focus, contentW)
 }
 

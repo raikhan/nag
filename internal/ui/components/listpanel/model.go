@@ -241,6 +241,18 @@ func (m Model) SelectedList() (reminders.ReminderList, bool) {
 	return item.List, true
 }
 
+// Lists returns the sidebar rows currently loaded, in display order.
+func (m Model) Lists() []reminders.ReminderList {
+	items := m.list.Items()
+	result := make([]reminders.ReminderList, 0, len(items))
+	for _, item := range items {
+		if li, ok := item.(Item); ok {
+			result = append(result, li.List)
+		}
+	}
+	return result
+}
+
 func (m Model) Filtering() bool {
 	return m.list.FilterState() == list.Filtering
 }

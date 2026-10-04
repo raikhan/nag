@@ -1,6 +1,7 @@
 package reminders
 
 import (
+	"math"
 	"reflect"
 	"sort"
 	"time"
@@ -98,6 +99,9 @@ func RemindersEqual(a, b []Reminder) bool {
 		if !reflect.DeepEqual(x.RecurrenceRules, y.RecurrenceRules) {
 			return false
 		}
+		if !AlarmsEqual(x.Alarms, y.Alarms) {
+			return false
+		}
 	}
 	return true
 }
@@ -149,6 +153,9 @@ func (c *Client) CreateReminder(input CreateReminderInput) (*Reminder, error) {
 		ekInput.DueDate = input.DueDate
 	}
 	ekInput.RecurrenceRules = input.RecurrenceRules
+	if len(input.Alarms) > 0 {
+		ekInput.Alarms = toEKAlarms(input.Alarms)
+	}
 	result, err := c.ek.CreateReminder(ekInput)
 	if err != nil {
 		return nil, err
@@ -178,6 +185,10 @@ func (c *Client) UpdateReminder(id string, input UpdateReminderInput) (*Reminder
 		rules := make([]eventkit.RecurrenceRule, len(*input.RecurrenceRules))
 		copy(rules, *input.RecurrenceRules)
 		ekInput.RecurrenceRules = &rules
+	}
+	if input.Alarms != nil {
+		alarms := toEKAlarms(*input.Alarms)
+		ekInput.Alarms = &alarms
 	}
 	result, err := c.ek.UpdateReminder(id, ekInput)
 	if err != nil {
@@ -231,5 +242,66 @@ func convertReminder(r ekreminders.Reminder) Reminder {
 		ModifiedAt:      r.ModifiedAt,
 		Recurring:       r.Recurring,
 		RecurrenceRules: append([]eventkit.RecurrenceRule(nil), r.RecurrenceRules...),
+		Alarms:          convertAlarms(r.Alarms),
 	}
+}
+
+func toEKAlarms(in []Alarm) []ekreminders.Alarm {
+	out := make([]ekreminders.Alarm, len(in))
+	for i, a := range in {
+		out[i] = ekreminders.Alarm{AbsoluteDate: a.AbsoluteDate, RelativeOffset: a.RelativeOffset}
+	}
+	return out
+}
+
+func convertAlarms(in []ekreminders.Alarm) []Alarm {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Alarm, len(in))
+	for i, a := range in {
+		out[i] = Alarm{AbsoluteDate: a.AbsoluteDate, RelativeOffset: a.RelativeOffset}
+	}
+	return out
+}
+
+// AlarmsEqual reports whether two alarm sets match, ignoring order: EventKit
+// does not promise to return alarms in the order they were written.
+func AlarmsEqual(a, b []Alarm) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	x := make([]Alarm, len(a))
+	y := make([]Alarm, len(b))
+	copy(x, a)
+	copy(y, b)
+	less := func(s []Alarm) func(i, j int) bool {
+		return func(i, j int) bool {
+			if s[i].RelativeOffset != s[j].RelativeOffset {
+				return s[i].RelativeOffset < s[j].RelativeOffset
+			}
+			return alarmUnix(s[i]) < alarmUnix(s[j])
+		}
+	}
+	sort.SliceStable(x, less(x))
+	sort.SliceStable(y, less(y))
+	for i := range x {
+		if x[i].RelativeOffset != y[i].RelativeOffset {
+			return false
+		}
+		if (x[i].AbsoluteDate == nil) != (y[i].AbsoluteDate == nil) {
+			return false
+		}
+		if x[i].AbsoluteDate != nil && !x[i].AbsoluteDate.Equal(*y[i].AbsoluteDate) {
+			return false
+		}
+	}
+	return true
+}
+
+func alarmUnix(a Alarm) int64 {
+	if a.AbsoluteDate == nil {
+		return math.MinInt64
+	}
+	return a.AbsoluteDate.Unix()
 }

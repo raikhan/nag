@@ -75,6 +75,8 @@ func openFieldFor(t *testing.T, m CreateModel, target formField) CreateModel {
 		jump = 'd'
 	case fieldTime:
 		jump = 'i'
+	case fieldAlarm:
+		jump = 'a'
 	case fieldPriority:
 		jump = 'p'
 	case fieldRecurrence:
@@ -251,8 +253,8 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 		t.Fatal("no editor may be focused while browsing")
 	}
 
-	// Tab cycles all six rows without opening any editor.
-	order := []formField{fieldNotes, fieldDate, fieldTime, fieldPriority, fieldRecurrence, fieldTitle}
+	// Tab cycles all seven rows without opening any editor.
+	order := []formField{fieldNotes, fieldDate, fieldTime, fieldAlarm, fieldPriority, fieldRecurrence, fieldTitle}
 	for _, want := range order {
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 		if m.mode != formBrowsing || m.selected != want {
@@ -312,10 +314,10 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 
 	// While editing Title, j/k and mnemonic letters remain text.
 	e := openFieldFor(t, m, fieldTitle)
-	for _, r := range "jktdiprn" {
+	for _, r := range "jktdiapr" {
 		e, _ = e.Update(press(r, string(r)))
 	}
-	if e.titleInput.Value() != "jktdiprn" {
+	if e.titleInput.Value() != "jktdiapr" {
 		t.Fatalf("mnemonic letters became commands: %q", e.titleInput.Value())
 	}
 	if e.mode != formEditing {
@@ -323,7 +325,7 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 	}
 	// Key releases are inert.
 	e, _ = e.Update(tea.KeyReleaseMsg{Code: 'j'})
-	if e.titleInput.Value() != "jktdiprn" {
+	if e.titleInput.Value() != "jktdiapr" {
 		t.Fatalf("key release changed the text: %q", e.titleInput.Value())
 	}
 	// Esc restores the snapshot and returns to browsing.
@@ -333,9 +335,9 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 	}
 
 	// One visible selected-row treatment: the marker appears for each of the
-	// six fields when selected.
+	// seven fields when selected.
 	m.SetSize(120, 40)
-	for _, f := range []formField{fieldTitle, fieldNotes, fieldDate, fieldTime, fieldPriority, fieldRecurrence} {
+	for _, f := range []formField{fieldTitle, fieldNotes, fieldDate, fieldTime, fieldAlarm, fieldPriority, fieldRecurrence} {
 		m.selected = f
 		view := m.View()
 		if !strings.Contains(view, ">") {
@@ -477,7 +479,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 		}
 	})
 
-	t.Run("custom weekly mon fri interval 3 count 10", func(t *testing.T) {
+	t.Run("custom weekly mon fri interval 3 until a date", func(t *testing.T) {
 		m := NewCreate()
 		m.SetKeys(keys)
 		m.ShowEdit(editFixture())
@@ -507,19 +509,21 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"0", "4"}})
-		// End -> after occurrences = 10.
+		// End -> On date = 2026-12-31.
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"2"}}) // after occurrences
-		m, _ = m.Update(press('1', "1"))
-		m, _ = m.Update(press('0', "0"))
+		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"1"}}) // on date
+		for _, r := range []string{"2", "0", "2", "6", "-", "1", "2", "-", "3", "1"} {
+			m, _ = m.Update(press(rune(r[0]), r))
+		}
 
 		m, cmd = m.Update(ctrlPress('s')) // apply editor
 		submit := mustCmd(t, cmd, "editor apply").(RecurrenceSubmitMsg)
 		rules := submit.Rules
 		if len(rules) != 1 || rules[0].Frequency != eventkit.FrequencyWeekly ||
 			rules[0].Interval != 3 || len(rules[0].DaysOfTheWeek) != 2 ||
-			rules[0].End == nil || rules[0].End.OccurrenceCount != 10 {
+			rules[0].End == nil || rules[0].End.EndDate == nil ||
+			rules[0].End.EndDate.Format("2006-01-02") != "2026-12-31" {
 			t.Fatalf("draft rules = %+v", rules)
 		}
 		for _, d := range rules[0].DaysOfTheWeek {
@@ -944,6 +948,141 @@ func TestDateAndTimeSubmission(t *testing.T) {
 		}
 		if !strings.Contains(m2.errText, "Time does not exist on that date") {
 			t.Fatalf("error = %q", m2.errText)
+		}
+	})
+}
+
+// TestRemindMeRow covers the Remind me row: the due-date guard, the chooser
+// contents, and the sparse alarm patch it writes.
+func TestRemindMeRow(t *testing.T) {
+	loc := perth(t)
+	now := time.Date(2026, time.October, 4, 13, 15, 0, 0, loc)
+
+	t.Run("without a date the row explains itself", func(t *testing.T) {
+		m := newCreateAt(t, now)
+		m = openFieldFor(t, m, fieldTitle)
+		m, _ = m.Update(tea.PasteMsg{Content: "No due"})
+		m = finishField(t, m)
+		m, _ = m.Update(press('a', "a"))
+		if m.mode != formBrowsing || m.selected != fieldAlarm {
+			t.Fatalf("guard changed the mode: mode %v selected %d", m.mode, m.selected)
+		}
+		if m.errText != "Set a date to use an early reminder" {
+			t.Fatalf("errText = %q", m.errText)
+		}
+		if m.selector.Visible() {
+			t.Fatal("the chooser must not open without a date")
+		}
+	})
+
+	t.Run("with a date the chooser opens on None", func(t *testing.T) {
+		m := newCreateAt(t, now)
+		m = openFieldFor(t, m, fieldTitle)
+		m, _ = m.Update(tea.PasteMsg{Content: "Call mum"})
+		m = finishField(t, m)
+		m = openFieldFor(t, m, fieldDate)
+		m, _ = m.Update(tea.PasteMsg{Content: "2026-10-05"})
+		m = finishField(t, m)
+		m = openFieldFor(t, m, fieldAlarm)
+		if !m.selector.Visible() {
+			t.Fatal("the chooser did not open")
+		}
+		opts := alarmOptions()
+		want := []string{"None", "At due time", "5 minutes before", "10 minutes before",
+			"15 minutes before", "30 minutes before", "1 hour before", "2 hours before", "1 day before"}
+		if len(opts) != len(want) {
+			t.Fatalf("chooser rows = %d, want %d", len(opts), len(want))
+		}
+		for i, o := range opts {
+			if o.Label != want[i] {
+				t.Fatalf("row %d = %q, want %q", i, o.Label, want[i])
+			}
+		}
+		if alarmChoiceID(m) != "none" {
+			t.Fatalf("preselected row = %q, want none", alarmChoiceID(m))
+		}
+	})
+
+	t.Run("30 minutes before patches the alarm in", func(t *testing.T) {
+		m := newEditAt(t, editFixture(), now)
+		m = openFieldFor(t, m, fieldAlarm)
+		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"30m"}})
+		if m.alarmLabel() != "30 minutes before" {
+			t.Fatalf("label = %q", m.alarmLabel())
+		}
+		_, msg := ctrlS(t, m)
+		sub, ok := msg.(EditSubmitMsg)
+		if !ok {
+			t.Fatalf("save produced %T", msg)
+		}
+		if sub.Input.Alarms == nil {
+			t.Fatal("saving a new alarm must patch it")
+		}
+		want := []reminders.Alarm{{RelativeOffset: -30 * time.Minute}}
+		if !reminders.AlarmsEqual(*sub.Input.Alarms, want) {
+			t.Fatalf("alarms = %+v, want %+v", *sub.Input.Alarms, want)
+		}
+	})
+
+	t.Run("At due time uses the composed due instant", func(t *testing.T) {
+		m := newEditAt(t, editFixture(), now)
+		m = openFieldFor(t, m, fieldAlarm)
+		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"attime"}})
+		_, msg := ctrlS(t, m)
+		sub := msg.(EditSubmitMsg)
+		due, err := m.composeDue()
+		if err != nil || due == nil {
+			t.Fatalf("compose due: %v", err)
+		}
+		want := []reminders.Alarm{{AbsoluteDate: due}}
+		if sub.Input.Alarms == nil || !reminders.AlarmsEqual(*sub.Input.Alarms, want) {
+			t.Fatalf("alarms = %+v, want %+v", sub.Input.Alarms, want)
+		}
+	})
+
+	t.Run("an untouched row sends no alarm patch", func(t *testing.T) {
+		m := newEditAt(t, editFixture(), now)
+		_, msg := ctrlS(t, m)
+		sub := msg.(EditSubmitMsg)
+		if sub.Input.Alarms != nil {
+			t.Fatalf("unchanged row patched alarms: %+v", *sub.Input.Alarms)
+		}
+	})
+
+	t.Run("an existing alarm round-trips and re-saves untouched", func(t *testing.T) {
+		r := editFixture()
+		r.Alarms = []reminders.Alarm{{RelativeOffset: -15 * time.Minute}}
+		m := newEditAt(t, r, now)
+		if m.alarmLabel() != "15 minutes before" {
+			t.Fatalf("seeded label = %q", m.alarmLabel())
+		}
+		_, msg := ctrlS(t, m)
+		sub := msg.(EditSubmitMsg)
+		if sub.Input.Alarms != nil {
+			t.Fatalf("unchanged seeded row patched alarms: %+v", *sub.Input.Alarms)
+		}
+	})
+
+	t.Run("clearing the date drops the alarm", func(t *testing.T) {
+		r := editFixture()
+		r.Alarms = []reminders.Alarm{{RelativeOffset: -15 * time.Minute}}
+		m := newEditAt(t, r, now)
+		m = openFieldFor(t, m, fieldDate)
+		m.picker.SetValue("")
+		m = finishField(t, m)
+		if m.alarmKind != alarmNone {
+			t.Fatalf("alarm kind = %d, want none", m.alarmKind)
+		}
+		if m.alarmLabel() != "None" {
+			t.Fatalf("label = %q, want None", m.alarmLabel())
+		}
+		_, msg := ctrlS(t, m)
+		sub := msg.(EditSubmitMsg)
+		if sub.Input.Alarms == nil {
+			t.Fatal("clearing the date must remove the alarm")
+		}
+		if len(*sub.Input.Alarms) != 0 {
+			t.Fatalf("alarms = %+v, want an empty removal", *sub.Input.Alarms)
 		}
 	})
 }
@@ -1426,8 +1565,8 @@ func TestRecurrenceDraftRestoration(t *testing.T) {
 	m.frequency = eventkit.FrequencyWeekly
 	m.intervalIn.SetValue("3")
 	m.weeklyDays = []bool{true, false, true, false, false, false, false}
-	m.endMode = endAfter
-	m.endCount = "10"
+	m.endMode = endOnDate
+	m.endPicker.SetValue("2026-12-31")
 	m.endDateOn = true
 	m.Hide()
 
@@ -1441,8 +1580,8 @@ func TestRecurrenceDraftRestoration(t *testing.T) {
 	if want := []bool{true, false, true, false, false, false, false}; !boolsEqual(m.weeklyDays, want) {
 		t.Fatalf("weekdays = %v, want %v", m.weeklyDays, want)
 	}
-	if m.endMode != endAfter || m.endCount != "10" || !m.endDateOn {
-		t.Fatalf("end not preserved: mode %d count %q on %v", m.endMode, m.endCount, m.endDateOn)
+	if m.endMode != endOnDate || m.endPickerValue().Format("2006-01-02") != "2026-12-31" || !m.endDateOn {
+		t.Fatalf("end not preserved: mode %d on %v", m.endMode, m.endDateOn)
 	}
 
 	// Apply: reopening restores the applied draft, not a rounded prefill.
@@ -1455,8 +1594,8 @@ func TestRecurrenceDraftRestoration(t *testing.T) {
 		t.Fatal("apply produced no RecurrenceSubmitMsg")
 	}
 	m.Show(msg.Rules, now, base, false)
-	if got := m.intervalIn.Value(); got != "3" || m.endCount != "10" {
-		t.Fatalf("applied draft lost: interval %q count %q", got, m.endCount)
+	if got := m.intervalIn.Value(); got != "3" || m.endMode != endOnDate {
+		t.Fatalf("applied draft lost: interval %q end mode %d", got, m.endMode)
 	}
 
 	// Reset: a draft never leaks into the next reminder.
@@ -1530,7 +1669,7 @@ func TestRecurrenceEditorNavigation(t *testing.T) {
 		}
 	})
 
-	t.Run("follow finds the grown occurrences field", func(t *testing.T) {
+	t.Run("follow finds the grown end-date field", func(t *testing.T) {
 		m := open(true)
 		m, _ = m.Update(press('j', "j"))
 		m, _ = m.Update(press('j', "j"))
@@ -1541,12 +1680,12 @@ func TestRecurrenceEditorNavigation(t *testing.T) {
 		if !m.selector.Visible() {
 			t.Fatal("enter on End repeat did not open the chooser")
 		}
-		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"2"}})
-		if m.endMode != endAfter {
-			t.Fatalf("end mode = %d, want endAfter", m.endMode)
+		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"1"}})
+		if m.endMode != endOnDate {
+			t.Fatalf("end mode = %d, want endOnDate", m.endMode)
 		}
 		if m.focusedField() != fEndValue {
-			t.Fatalf("follow left the cursor on %v, want the occurrences input", m.focusedField())
+			t.Fatalf("follow left the cursor on %v, want the end-date input", m.focusedField())
 		}
 	})
 
@@ -1617,6 +1756,120 @@ func TestRecurrenceEditorNavigation(t *testing.T) {
 		}
 		if v := cm.recurrenceE.View(); !strings.Contains(v, "follow:off") {
 			t.Fatalf("editor footer does not show the new mode: %q", v)
+		}
+	})
+}
+
+// TestRecurrenceEnterWalksEveryFieldInFollowMode verifies the new Enter
+// contract in the Custom editor: with follow armed it steps to the next
+// field and applies from the last one, so a walk needs no Ctrl-S; with
+// follow off Enter on a plain field still applies immediately.
+func TestRecurrenceEnterWalksEveryFieldInFollowMode(t *testing.T) {
+	loc := perth(t)
+	now := time.Date(2026, time.October, 4, 13, 15, 0, 0, loc)
+	base := midnightOf(now)
+
+	open := func(follow bool) RecurrenceModel {
+		m := NewRecurrence(testKeys(t))
+		m.SetSize(80, 24)
+		m.Show(nil, now, base, follow)
+		return m
+	}
+
+	t.Run("follow advances from Interval instead of applying", func(t *testing.T) {
+		m := open(true)
+		m, _ = m.Update(press(tea.KeyEnter, ""))
+		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"weekly"}})
+		if m.focusedField() != fInterval {
+			t.Fatalf("cursor on %v, want the interval field", m.focusedField())
+		}
+		m, cmd := m.Update(press(tea.KeyEnter, ""))
+		if cmd != nil {
+			t.Fatal("Enter on Interval with follow armed must not apply")
+		}
+		if m.focusedField() != fWeeklyDays {
+			t.Fatalf("Enter left the cursor on %v, want the days field", m.focusedField())
+		}
+		if m.visible != true {
+			t.Fatal("the editor closed mid-walk")
+		}
+	})
+
+	t.Run("follow applies from the last field", func(t *testing.T) {
+		m := open(true)
+		fs := m.fields()
+		m.focusIndex = len(fs) - 1
+		m.focusField()
+		if got := m.focusedField(); got != fEnd {
+			t.Fatalf("last field is %v, want End repeat", got)
+		}
+		m, cmd := m.Update(press(tea.KeyEnter, ""))
+		if !m.selector.Visible() {
+			t.Fatal("Enter on the last field must open its chooser")
+		}
+		m, cmd = m.Update(selectorSelectedMsg{IDs: []string{"0"}})
+		msg, ok := mustCmd(t, cmd, "walk apply").(RecurrenceSubmitMsg)
+		if !ok {
+			t.Fatal("a walk that reaches the last field must apply")
+		}
+		if len(msg.Rules) != 1 {
+			t.Fatalf("applied rules = %+v", msg.Rules)
+		}
+		if m.visible {
+			t.Fatal("applying must close the editor")
+		}
+	})
+
+	t.Run("follow off still applies from Interval", func(t *testing.T) {
+		m := open(false)
+		m.focusIndex = 1
+		m.focusField()
+		if got := m.focusedField(); got != fInterval {
+			t.Fatalf("cursor on %v, want the interval field", got)
+		}
+		m, cmd := m.Update(press(tea.KeyEnter, ""))
+		if _, ok := mustCmd(t, cmd, "apply").(RecurrenceSubmitMsg); !ok {
+			t.Fatal("Enter on Interval with follow off must apply")
+		}
+		if m.visible {
+			t.Fatal("applying must close the editor")
+		}
+	})
+
+	t.Run("end offers only Never and On date", func(t *testing.T) {
+		m := open(false)
+		opts := m.chooserOptions(fEnd)
+		if len(opts) != 2 {
+			t.Fatalf("end options = %+v, want Never and On date only", opts)
+		}
+		if opts[0].Label != "Never" || opts[1].Label != "On date" {
+			t.Fatalf("end options = %q, %q", opts[0].Label, opts[1].Label)
+		}
+	})
+
+	t.Run("an occurrence-count rule opens on Never with a warning", func(t *testing.T) {
+		rules := []eventkit.RecurrenceRule{{
+			Frequency: eventkit.FrequencyWeekly,
+			Interval:  2,
+			DaysOfTheWeek: []eventkit.RecurrenceDayOfWeek{
+				{DayOfTheWeek: eventkit.Monday, WeekNumber: 0},
+			},
+			End: &eventkit.RecurrenceEnd{OccurrenceCount: 5},
+		}}
+		p := prefillFields(rules)
+		if p == nil {
+			t.Fatal("the rule is representable and must prefill")
+		}
+		if p.endMode != endNever {
+			t.Fatalf("end mode = %d, want endNever", p.endMode)
+		}
+		if p.droppedCount != 5 {
+			t.Fatalf("droppedCount = %d, want 5", p.droppedCount)
+		}
+		m := open(false)
+		m.Show(rules, now, base, false)
+		if !strings.Contains(m.banner, "ends after 5 occurrences") {
+			t.Fatalf("banner = %q, want the dropped-count warning", m.banner)
 		}
 	})
 }

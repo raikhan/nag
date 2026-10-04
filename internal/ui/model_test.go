@@ -128,6 +128,46 @@ func TestV2MouseFocusAndModalIsolation(t *testing.T) {
 	}
 }
 
+// TestHLMovesBetweenPanels covers the vim-style panel moves: h focuses the
+// lists pane and l the reminders pane, both idempotent, and neither pages
+// the focused list (paging keeps left/right/pgup/pgdn/b/u/f).
+func TestHLMovesBetweenPanels(t *testing.T) {
+	m := newTestModel(t)
+	if m.focusedPanel != PanelLists {
+		t.Fatalf("start focus = %v, want PanelLists", m.focusedPanel)
+	}
+
+	m = deliver2(t, m, tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if m.focusedPanel != PanelReminders {
+		t.Fatalf("l from lists: focus = %v, want PanelReminders", m.focusedPanel)
+	}
+	m = deliver2(t, m, tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if m.focusedPanel != PanelReminders {
+		t.Fatalf("l twice: focus = %v, want PanelReminders", m.focusedPanel)
+	}
+
+	before, _ := m.reminderPanel.SelectedReminder()
+	m = deliver2(t, m, tea.KeyPressMsg{Code: 'h', Text: "h"})
+	if m.focusedPanel != PanelLists {
+		t.Fatalf("h from reminders: focus = %v, want PanelLists", m.focusedPanel)
+	}
+	m = deliver2(t, m, tea.KeyPressMsg{Code: 'h', Text: "h"})
+	if m.focusedPanel != PanelLists {
+		t.Fatalf("h twice: focus = %v, want PanelLists", m.focusedPanel)
+	}
+	after, _ := m.reminderPanel.SelectedReminder()
+	if after.ID != before.ID {
+		t.Fatalf("h moved the reminders selection %q -> %q", before.ID, after.ID)
+	}
+
+	// Paging still reaches the focused list through the arrow keys.
+	m = deliver2(t, m, tea.KeyPressMsg{Code: 'l', Text: "l"})
+	m = deliver2(t, m, tea.KeyPressMsg{Code: tea.KeyRight})
+	if got, _ := m.reminderPanel.SelectedReminder(); got.ID != after.ID {
+		t.Fatalf("right changed the selection %q -> %q", after.ID, got.ID)
+	}
+}
+
 func deliver2(t *testing.T, m Model, msg tea.Msg) Model {
 	next, _ := deliver(t, m, msg)
 	return next
@@ -636,9 +676,19 @@ func TestAceJumpIgnoresStaleListID(t *testing.T) {
 	}
 }
 
-// TestAceExitsOnResizeMouseListsAndTickButRetainsOnSpinner verifies the
-// cancellation rules around transient messages.
-func TestAceExitsOnResizeMouseListsAndTickButRetainsOnSpinner(t *testing.T) {
+// TestAceSurvivesUnchangedRefreshAndCancelsOnRealChanges verifies that a
+// background refresh only ends an in-flight ace jump when it actually
+// changes the visible rows, and that direct user/terminal events still do.
+func TestAceSurvivesUnchangedRefreshAndCancelsOnRealChanges(t *testing.T) {
+	lists := []reminders.ReminderList{
+		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
+		{ID: "query", Title: "Query", Kind: reminders.ListNormal},
+	}
+	rows := []reminders.Reminder{
+		{ID: "r-alpha", Title: "Alpha"},
+		{ID: "r-query", Title: "Query"},
+	}
+
 	m := newTestModel(t)
 
 	m, _ = aceStart(t, m)
@@ -653,26 +703,56 @@ func TestAceExitsOnResizeMouseListsAndTickButRetainsOnSpinner(t *testing.T) {
 		t.Fatal("mouse activity must cancel ace")
 	}
 
+	// Unchanged polls keep the jump alive.
 	m, _ = aceStart(t, m)
 	m = deliver2(t, m, messages.TickMsg{})
+	if !m.ace.active {
+		t.Fatal("auto-refresh tick must retain ace")
+	}
+	m = deliver2(t, m, delayedRefreshMsg{})
+	if !m.ace.active {
+		t.Fatal("delayed refresh must retain ace")
+	}
+	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: lists})
+	if !m.ace.active {
+		t.Fatal("unchanged lists load must retain ace")
+	}
+	m = deliver2(t, m, messages.RemindersLoadedMsg{ListID: "alpha", Reminders: rows})
+	if !m.ace.active {
+		t.Fatal("unchanged reminders load must retain ace")
+	}
+
+	// Spinner-only messages retain ace.
+	m = deliver2(t, m, spinner.TickMsg{ID: m.spinner.ID()})
+	if !m.ace.active {
+		t.Fatal("spinner tick must retain ace")
+	}
+
+	// Real changes to the sidebar cancel the jump.
+	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: append(append([]reminders.ReminderList{}, lists...),
+		reminders.ReminderList{ID: "extra", Title: "Extra", Kind: reminders.ListNormal})})
 	if m.ace.active {
-		t.Fatal("auto-refresh tick must cancel ace")
+		t.Fatal("adding a list must cancel ace")
 	}
 
 	m, _ = aceStart(t, m)
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
-		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
-		{ID: "query", Title: "Query", Kind: reminders.ListNormal},
+		{ID: "alpha", Title: "Renamed", Kind: reminders.ListNormal},
+		lists[1],
 	}})
 	if m.ace.active {
-		t.Fatal("lists load must cancel ace")
+		t.Fatal("renaming a list must cancel ace")
 	}
 
-	// Spinner-only messages retain ace.
+	// A changed reminder title cancels the jump.
+	m.selectedList = &reminders.ReminderList{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal}
 	m, _ = aceStart(t, m)
-	m = deliver2(t, m, spinner.TickMsg{ID: m.spinner.ID()})
-	if !m.ace.active {
-		t.Fatal("spinner tick must retain ace")
+	m = deliver2(t, m, messages.RemindersLoadedMsg{ListID: "alpha", Reminders: []reminders.Reminder{
+		{ID: "r-alpha", Title: "Alpha renamed"},
+		rows[1],
+	}})
+	if m.ace.active {
+		t.Fatal("changed reminder rows must cancel ace")
 	}
 }
 
@@ -927,5 +1007,25 @@ func TestV2SidebarNavigationLoadsListWithoutEnter(t *testing.T) {
 	}
 	if !m.pendingFocus {
 		t.Fatal("enter did not set pendingFocus")
+	}
+}
+
+// TestEnterEditsReminderFromRemindersPane verifies Enter is the edit key for
+// the highlighted reminder while the reminders pane holds focus.
+func TestEnterEditsReminderFromRemindersPane(t *testing.T) {
+	m := newTestModel(t)
+	m = deliver2(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	if m.focusedPanel != PanelReminders {
+		t.Fatalf("focus = %v, want PanelReminders", m.focusedPanel)
+	}
+	m = deliver2(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.createDlg.Visible() {
+		t.Fatal("Enter on a reminder must open the edit form")
+	}
+
+	m = deliver2(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = deliver2(t, m, tea.KeyPressMsg{Code: 'e', Text: "e"})
+	if !m.createDlg.Visible() {
+		t.Fatal("e on a reminder must open the edit form")
 	}
 }
