@@ -107,6 +107,16 @@ type RecurrenceModel struct {
 	banner  string
 
 	focusIndex int
+	// follow advances the editor to the next field after each inner
+	// chooser is confirmed. It is a mode, not draft content, so it is
+	// neither snapshotted nor reset.
+	follow bool
+
+	// saved/draftValid preserve the Custom draft across reopening the
+	// editor while the committed rules stay unchanged.
+	saved      draftState
+	savedRules []eventkit.RecurrenceRule
+	draftValid bool
 }
 
 // NewRecurrence builds the editor with the given compiled bindings.
@@ -137,26 +147,108 @@ func (m *RecurrenceModel) initIntervalKeys() {
 	projectTextInputKeys(&m.intervalIn, m.keys)
 }
 
+// draftState captures every draft control by value, so reopening the Custom
+// editor restores exactly what the user had typed instead of a round-tripped
+// prefill of the committed rules.
+type draftState struct {
+	frequency    eventkit.RecurrenceFrequency
+	intervalText string
+	weeklyDays   []bool
+	monthlyDays  []bool
+	yearlyMonths []bool
+	monthlyMode  int
+	ordinal      int
+	dayKindV     dayKind
+	dayKindWd    eventkit.Weekday
+	yearlyOn     bool
+	endMode      int
+	endCount     string
+	endDateOn    bool
+	endText      string
+	focusIndex   int
+}
+
+func cloneBools(v []bool) []bool {
+	out := make([]bool, len(v))
+	copy(out, v)
+	return out
+}
+
+// snapshot records the current draft and the rules it was opened for.
+func (m *RecurrenceModel) snapshot() {
+	m.saved = draftState{
+		frequency:    m.frequency,
+		intervalText: m.intervalIn.Value(),
+		weeklyDays:   cloneBools(m.weeklyDays),
+		monthlyDays:  cloneBools(m.monthlyDays),
+		yearlyMonths: cloneBools(m.yearlyMonths),
+		monthlyMode:  m.monthlyMode,
+		ordinal:      m.ordinal,
+		dayKindV:     m.dayKindV,
+		dayKindWd:    m.dayKindWd,
+		yearlyOn:     m.yearlyOn,
+		endMode:      m.endMode,
+		endCount:     m.endCount,
+		endDateOn:    m.endDateOn,
+		endText:      m.endPicker.Value(),
+		focusIndex:   m.focusIndex,
+	}
+}
+
+// restore writes the preserved draft back over the controls.
+func (m *RecurrenceModel) restore() {
+	m.frequency = m.saved.frequency
+	m.intervalIn.SetValue(m.saved.intervalText)
+	m.weeklyDays = cloneBools(m.saved.weeklyDays)
+	m.monthlyDays = cloneBools(m.saved.monthlyDays)
+	m.yearlyMonths = cloneBools(m.saved.yearlyMonths)
+	m.monthlyMode = m.saved.monthlyMode
+	m.ordinal = m.saved.ordinal
+	m.dayKindV = m.saved.dayKindV
+	m.dayKindWd = m.saved.dayKindWd
+	m.yearlyOn = m.saved.yearlyOn
+	m.endMode = m.saved.endMode
+	m.endCount = m.saved.endCount
+	m.endDateOn = m.saved.endDateOn
+	m.focusIndex = m.saved.focusIndex
+	m.banner = ""
+}
+
+// Reset drops any preserved draft so it never leaks into the next reminder.
+func (m *RecurrenceModel) Reset() {
+	m.saved = draftState{}
+	m.savedRules = nil
+	m.draftValid = false
+}
+
 // Show opens the editor prefilled from rules. base is the editing anchor
 // (the reminder's due date when known, otherwise today at 09:00). Multiple
-// or unrepresentable rules start a replacement draft and show a banner.
-func (m *RecurrenceModel) Show(rules []eventkit.RecurrenceRule, now, base time.Time) {
+// or unrepresentable rules start a replacement draft and show a banner. When
+// the committed rules are unchanged since the draft was captured, the draft
+// itself is restored instead.
+func (m *RecurrenceModel) Show(rules []eventkit.RecurrenceRule, now, base time.Time, follow bool) {
 	m.visible = true
 	m.now, m.base = now, base
+	m.follow = follow
 	m.errText = ""
 	m.purpose = spNone
-	m.endPicker = datePickerNew(now, base, m.keys)
+	m.focusIndex = 0
 	m.initIntervalKeys()
-	m.intervalIn.SetValue("1")
+	m.blurAll()
 
+	if m.draftValid && rulesEqual(rules, m.savedRules) {
+		m.restore()
+		m.endPicker = datePickerNew(now, base, m.keys)
+		m.endPicker.SetValue(m.saved.endText)
+		m.focusField()
+		return
+	}
+
+	m.endPicker = datePickerNew(now, base, m.keys)
+	m.intervalIn.SetValue("1")
 	m.resetDraft()
-	prefilled := prefillFields(rules)
-	if prefilled != nil {
+	if prefilled := prefillFields(rules); prefilled != nil {
 		m.applyPrefill(*prefilled)
-		if !rulesEqual(rules, m.draftRules()) {
-			// draft semantics differ; keep prefill anyway
-			_ = rules
-		}
 	} else if len(rules) > 0 {
 		m.banner = "Applying replaces the existing custom schedule"
 	} else {
@@ -165,6 +257,9 @@ func (m *RecurrenceModel) Show(rules []eventkit.RecurrenceRule, now, base time.T
 	m.focusIndex = 0
 	m.blurAll()
 	m.focusField()
+	m.snapshot()
+	m.savedRules = copyRules(rules)
+	m.draftValid = true
 }
 
 // resetDraft starts a fresh Custom draft: Daily, interval 1, Never.
@@ -353,6 +448,11 @@ func weekdayIndex(w eventkit.Weekday) int {
 
 // Hide closes the editor without emitting anything.
 func (m *RecurrenceModel) Hide() {
+	// Cancel closes without emitting, so the typed draft is captured here
+	// and a reopen returns to the same controls.
+	if m.visible && m.draftValid {
+		m.snapshot()
+	}
 	m.visible = false
 }
 
@@ -773,6 +873,35 @@ func (m *RecurrenceModel) applyChooserResult(ids []string) {
 	}
 }
 
+// focusedField returns the fieldKind under the editor cursor.
+func (m RecurrenceModel) focusedField() fieldKind {
+	fs := m.fields()
+	if m.focusIndex >= len(fs) {
+		return fFrequency
+	}
+	return fs[m.focusIndex]
+}
+
+// finishChoiceField applies an inner chooser result. In follow mode the
+// editor steps to the field after the one just finished; fields() changes
+// length with frequency/mode, so the finished field is re-located by kind
+// before stepping. With follow off the choice leaves the cursor alone.
+func (m *RecurrenceModel) finishChoiceField(ids []string) {
+	kind := m.focusedField()
+	m.applyChooserResult(ids)
+	if !m.follow {
+		return
+	}
+	fs := m.fields()
+	for i, f := range fs {
+		if f == kind {
+			m.focusIndex = mod(i+1, len(fs))
+			break
+		}
+	}
+	m.focusField()
+}
+
 // setFrequency changes frequency, retaining interval and end while
 // re-initializing frequency-specific controls from the anchor.
 func (m *RecurrenceModel) setFrequency(id string) {
@@ -907,6 +1036,11 @@ func (m *RecurrenceModel) apply() tea.Cmd {
 	rules := m.draftRules()
 	m.errText = ""
 	m.visible = false
+	// Reopening Custom after Apply restores this exact draft rather than a
+	// round-tripped prefill of the rules just produced.
+	m.snapshot()
+	m.savedRules = copyRules(rules)
+	m.draftValid = true
 	return func() tea.Msg { return RecurrenceSubmitMsg{Rules: rules} }
 }
 
@@ -934,7 +1068,7 @@ func (m RecurrenceModel) Update(msg tea.Msg) (RecurrenceModel, tea.Cmd) {
 	case selectorSelectedMsg:
 		m.purpose = spNone
 		m.selector.Close()
-		m.applyChooserResult(msg.IDs)
+		m.finishChoiceField(msg.IDs)
 		return m, nil
 	case selectorCancelledMsg:
 		m.purpose = spNone
@@ -950,6 +1084,12 @@ func (m RecurrenceModel) Update(msg tea.Msg) (RecurrenceModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		// Follow mode is shared with the outer form's form.follow_mode
+		// binding; nothing below may shadow the toggle.
+		if key.Matches(msg, m.keys.Bind("form", "follow_mode")) {
+			m.follow = !m.follow
+			return m, nil
+		}
 		fs := m.fields()
 		if m.focusIndex < len(fs) && isEditorChoiceField(fs[m.focusIndex]) &&
 			key.Matches(msg, m.keys.Bind("choice_field", "open")) {
@@ -1083,10 +1223,19 @@ func (m RecurrenceModel) View() string {
 			b.WriteString("\n")
 		}
 	}
-	footer := keybind.ShortKeys(m.keys.Aliases("dialog", "submit")) + ": apply  " +
-		keybind.ShortKeys(m.keys.Aliases("dialog", "next_field")) + ": next  " +
-		keybind.ShortKeys(m.keys.Aliases("dialog", "cancel")) + ": cancel"
-	b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).Render(footer))
+	footer := hint(
+		keybind.ShortKeys(m.keys.Aliases("dialog", "submit"))+": apply",
+		keybind.ShortKeys(m.keys.Aliases("dialog", "next_field"))+": next",
+		keybind.ShortKeys(m.keys.Aliases("dialog", "cancel"))+": cancel",
+		followHint(m.keys, m.follow),
+	)
+	// The pane can be narrower than the footer, so let it wrap rather than
+	// clip: a clipped follow hint hides the toggle's current state.
+	footerStyle := lipgloss.NewStyle().Foreground(styles.DimGray)
+	if m.width > 0 {
+		footerStyle = footerStyle.Width(m.width)
+	}
+	b.WriteString(footerStyle.Render(footer))
 	return b.String()
 }
 

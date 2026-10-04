@@ -144,6 +144,34 @@ func TestFuzzySelectionAndCancellation(t *testing.T) {
 	s, _ = s.Update(keyPress(tea.KeyEscape, ""))
 }
 
+// TestMultiSelectMarksEveryRow pins the popup's multi-select affordance: the
+// committed rows are checked and every uncommitted row is an empty box, so a
+// multi chooser cannot be mistaken for a single-select one.
+func TestMultiSelectMarksEveryRow(t *testing.T) {
+	opts := []Option{
+		{ID: "mo", Label: "Monday"},
+		{ID: "tu", Label: "Tuesday"},
+		{ID: "we", Label: "Wednesday"},
+	}
+
+	s := New(testKeys(t))
+	s.SetSize(40, 14)
+	s.Open(opts, []string{"tu"}, true)
+
+	v := s.View()
+	if !strings.Contains(v, "☑ Tuesday") {
+		t.Fatalf("committed row is not checked: %q", v)
+	}
+	for _, label := range []string{"Monday", "Wednesday"} {
+		if !strings.Contains(v, "☐ "+label) {
+			t.Fatalf("uncommitted row %q has no empty box: %q", label, v)
+		}
+	}
+	if strings.Contains(v, "☑ Monday") || strings.Contains(v, "☑ Wednesday") {
+		t.Fatalf("uncommitted row rendered as checked: %q", v)
+	}
+}
+
 func TestKeysDoNotLeakIntoQuery(t *testing.T) {
 	keys := testKeys(t)
 	if !key.Matches(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl}, keys.Bind("selector", "down")) {

@@ -47,7 +47,7 @@ func newVisibleCreate(t *testing.T, now time.Time, w, h int) CreateModel {
 	m.SetKeys(testKeys(t))
 	m.SetSize(w, h)
 	m.showAt("Alpha", now)
-	return m
+	return noFollow(m)
 }
 
 func TestCreateEditPaneLayout(t *testing.T) {

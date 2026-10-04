@@ -63,8 +63,6 @@ func TestParseTimeEntry(t *testing.T) {
 		{"12345", Clock{}, true, true},
 		{"6:13:00", Clock{}, true, true},
 		{"6:13pm UTC", Clock{}, true, true},
-		{"+2h", Clock{}, true, true},
-		{"-2h", Clock{}, true, true},
 		{"2026-10-04", Clock{}, true, true},
 		{"oct 4", Clock{}, true, true},
 		{"6pmx", Clock{}, true, true},
@@ -78,7 +76,7 @@ func TestParseTimeEntry(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			got, present, err := Parse(tc.in)
+			got, present, err := Parse(tc.in, capturedNow)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("Parse(%q) = %v, want error", tc.in, got)
@@ -93,6 +91,48 @@ func TestParseTimeEntry(t *testing.T) {
 			}
 			if present != tc.present {
 				t.Fatalf("Parse(%q) present = %v, want %v", tc.in, present, tc.present)
+			}
+			if got != tc.want {
+				t.Fatalf("Parse(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseRelativeTimeEntry covers the signed offset forms, which resolve
+// against the captured clock and wrap at midnight without moving the date.
+func TestParseRelativeTimeEntry(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    Clock
+		wantErr bool
+	}{
+		{"+2h", Clock{15, 15}, false},
+		{"-2h", Clock{11, 15}, false},
+		{"+75min", Clock{14, 30}, false},
+		{"+12m", Clock{13, 27}, false},
+		{"-90min", Clock{11, 45}, false},
+		{"+13h", Clock{2, 15}, false}, // wraps past midnight
+		{"+1h30m", Clock{}, true},
+		{"+2 h", Clock{}, true},
+		{"+2s", Clock{}, true},
+		{"+", Clock{}, true},
+		{"+9999999h", Clock{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, present, err := Parse(tc.in, capturedNow)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Parse(%q) = %v, want error", tc.in, got)
+				}
+				if present {
+					t.Fatalf("Parse(%q) present = true, want false on error", tc.in)
+				}
+				return
+			}
+			if err != nil || !present {
+				t.Fatalf("Parse(%q) = %v, %v", tc.in, present, err)
 			}
 			if got != tc.want {
 				t.Fatalf("Parse(%q) = %v, want %v", tc.in, got, tc.want)
@@ -123,12 +163,12 @@ func TestClockString(t *testing.T) {
 
 func TestParseTimeEntryCanonicalRoundTrip(t *testing.T) {
 	for _, text := range []string{"6p", "6pm", "12a", "12p", "1413", "14:13", "615p", "9:05", "0", "23"} {
-		clock, present, err := Parse(text)
+		clock, present, err := Parse(text, capturedNow)
 		if err != nil || !present {
 			t.Fatalf("Parse(%q) = %v, %v", text, present, err)
 		}
 		canonical := clock.String()
-		again, present, err := Parse(canonical)
+		again, present, err := Parse(canonical, capturedNow)
 		if err != nil || !present {
 			t.Fatalf("reparse %q: %v, %v", canonical, present, err)
 		}

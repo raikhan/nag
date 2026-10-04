@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `z` ace jump: label and jump to any visible sidebar list or visible reminder row of the selected list using configurable alphabet labels; the trigger is a toggle, trigger letters are never used as labels, and `[ace] timeout_seconds` auto-cancels the jump (`-1` disables, `0` cancels immediately)
 - Separate Date and Time entry in the create/edit form: Org-style civil dates in the Date field, clock times (`6p`, `14:13`, `615p`) in the Time field with a live canonical preview and local zone; blank time with a date means 09:00 local
 - Reminder form navigation: six fields browsed with `Tab`/`j`, `Shift-Tab`/`k`, mnemonic jumps (`t` `n` `d` `i` `p` `r`), `Enter` to edit/finish fields and `Ctrl-S` to save; all fields stay visible beside the active editor in a side-by-side pane layout that stacks on narrow terminals
+- The Custom repeat editor steps its fields with `Tab`/`j` and `Shift-Tab`/`k` like the reminder form, and `Ctrl-F` toggles follow mode inside it: with follow on, confirming an inner chooser advances to the next editor field, including fields the choice just added; cancelling a chooser leaves the cursor where it was, and the editor's mode is mirrored back to the form
 
 ### Fixed
 - Calendar grid aligned every one of its 42 cells with the weekday columns; adjacent-month days render dimmed instead of leaving blank leading cells
@@ -30,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Reminder form Notes is a multiline editor: `Ctrl-J` inserts a newline, `Enter` finishes the field, and `Ctrl-O` opens the value in `$EDITOR` (`VISUAL`/`EDITOR`/`vi`); committed notes keep their newlines
 - The fuzzy priority/recurrence choosers render one line per option without checkbox markers; the cursor highlight indicates the selection, and multi-select toggles keep the `☑` marker
+- Multi-select choosers mark every row: committed options keep `☑` and uncommitted ones render `☐`, so the popup no longer reads as single-select
 - Server-side sync polls Reminders every 2 seconds (was 10); an unchanged poll no longer rewrites the reminder panel
 - The reminder panel follows sidebar navigation: moving the list selection (`j`/`k`, arrows, paging, mouse wheel) loads that list's reminders without pressing `Enter`; `Enter` still moves focus to the reminders panel
 - Due-date entry is date-only: combined date/time text and hour offsets (`+2h`) are rejected with a pointer to the Time field

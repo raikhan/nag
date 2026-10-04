@@ -2,6 +2,8 @@ package dialog
 
 import (
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BRO3886/go-eventkit"
@@ -97,6 +99,132 @@ func matchPreset(rules []eventkit.RecurrenceRule) string {
 		}
 	}
 	return ""
+}
+
+// recurrenceChoiceID is the chooser option matching the committed rules:
+// the preset id, or "custom" for any schedule that is not a preset
+// (representable or not).
+func recurrenceChoiceID(rules []eventkit.RecurrenceRule) string {
+	if id := matchPreset(rules); id != "" {
+		return id
+	}
+	return "custom"
+}
+
+// weekdayAbbrev is the short weekday name in Monday-first order.
+var weekdayAbbrev = []string{"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+
+// customLabel renders one representable recurrence rule as a single line, so
+// the summary row says what the schedule actually repeats.
+func customLabel(rules []eventkit.RecurrenceRule) string {
+	if len(rules) != 1 {
+		return "Custom"
+	}
+	r := rules[0]
+	var b string
+	switch r.Frequency {
+	case eventkit.FrequencyDaily:
+		b = intervalBase(r.Interval, "Daily", "days")
+	case eventkit.FrequencyWeekly:
+		b = intervalBase(r.Interval, "Weekly", "weeks")
+		if days := weekdayList(r.DaysOfTheWeek); days != "" {
+			b += " on " + days
+		}
+	case eventkit.FrequencyMonthly:
+		b = intervalBase(r.Interval, "Monthly", "months")
+		switch {
+		case len(r.DaysOfTheMonth) > 0:
+			ids := make([]int, len(r.DaysOfTheMonth))
+			copy(ids, r.DaysOfTheMonth)
+			names := make([]string, 0, len(ids))
+			for _, d := range sortedDayIDs(ids) {
+				if d == -1 {
+					names = append(names, ordinalLabel(-1))
+					continue
+				}
+				names = append(names, strconv.Itoa(d))
+			}
+			b += " on " + strings.Join(names, ", ")
+		default:
+			if o := onThePattern(r); o != nil {
+				b += " on the " + onTheLabel(*o)
+			}
+		}
+	case eventkit.FrequencyYearly:
+		months := make([]int, len(r.MonthsOfTheYear))
+		copy(months, r.MonthsOfTheYear)
+		sort.Ints(months)
+		names := make([]string, 0, len(months))
+		for _, mo := range months {
+			if mo >= 1 && mo <= 12 {
+				names = append(names, monthNames[mo-1])
+			}
+		}
+		b = "Every year in " + strings.Join(names, ", ")
+		if len(r.DaysOfTheWeek) == 1 {
+			d := r.DaysOfTheWeek[0]
+			ordinal := d.WeekNumber
+			if len(r.SetPositions) == 1 {
+				ordinal = r.SetPositions[0]
+			}
+			b += " on the " + lowerOrdinal(ordinal) + " " +
+				weekdayNames[weekdayIndex(d.DayOfTheWeek)]
+		}
+	}
+	if r.End != nil {
+		switch {
+		case r.End.EndDate != nil:
+			b += " until " + r.End.EndDate.Local().Format("2006-01-02")
+		case r.End.OccurrenceCount > 0:
+			b += " for " + strconv.Itoa(r.End.OccurrenceCount) + " occurrences"
+		}
+	}
+	return b
+}
+
+// intervalBase renders "Daily" for interval 1 and "Every 3 days" otherwise.
+func intervalBase(n int, one, many string) string {
+	if n <= 1 {
+		return one
+	}
+	return "Every " + strconv.Itoa(n) + " " + many
+}
+
+// onTheLabel renders the tail of a monthly "on the ..." clause.
+func onTheLabel(o onThe) string {
+	switch o.kind {
+	case dayKindWeekday:
+		return "weekdays"
+	case dayKindWeekend:
+		return "weekend days"
+	case dayKindDay:
+		return "every day"
+	}
+	if len(o.weekdays) == 0 {
+		return "every day"
+	}
+	return lowerOrdinal(o.ordinal) + " " + weekdayNames[weekdayIndex(o.weekdays[0])]
+}
+
+func lowerOrdinal(o int) string {
+	return strings.ToLower(ordinalLabel(o))
+}
+
+// weekdayList renders a weekday set as three-letter names, Monday first.
+func weekdayList(days []eventkit.RecurrenceDayOfWeek) string {
+	if len(days) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(weekdayAbbrev))
+	for i, name := range weekdayAbbrev {
+		for _, d := range days {
+			if weekdayIndex(d.DayOfTheWeek) == i {
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 // weekdaySetMatches checks an unconstrained (WeekNumber 0) day set equality.

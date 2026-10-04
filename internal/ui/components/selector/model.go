@@ -32,11 +32,15 @@ type CancelledMsg struct{}
 type item struct {
 	opt      Option
 	selected bool
+	multi    bool
 }
 
 func (i item) Title() string {
 	if i.selected {
 		return "☑ " + i.opt.Label
+	}
+	if i.multi {
+		return "☐ " + i.opt.Label
 	}
 	return i.opt.Label
 }
@@ -140,7 +144,7 @@ func (m *Model) Open(options []Option, selectedIDs []string, multi bool) {
 
 	items := make([]list.Item, len(m.options))
 	for i, o := range m.options {
-		items[i] = item{opt: o, selected: m.multi && m.committed[o.ID]}
+		items[i] = item{opt: o, selected: m.multi && m.committed[o.ID], multi: m.multi}
 	}
 	m.list.SetItems(items)
 	m.list.SetFilterText("")
@@ -279,7 +283,7 @@ func (m *Model) selectedIDs() []string {
 func (m *Model) refreshSelection() {
 	items := make([]list.Item, len(m.options))
 	for i, o := range m.options {
-		items[i] = item{opt: o, selected: m.multi && m.committed[o.ID]}
+		items[i] = item{opt: o, selected: m.multi && m.committed[o.ID], multi: m.multi}
 	}
 	m.list.SetItems(items)
 	m.applyQuery()

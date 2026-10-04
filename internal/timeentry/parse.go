@@ -1,12 +1,16 @@
 // Package timeentry parses clock times for the separate Time field.
 // Parse is pure and allocation-light: it works on trimmed string slices
 // with checked digit accumulation, never touching regexes, locations or
-// dates.
+// dates. Absolute forms are zone-independent; relative forms (a sign, an
+// amount and an hour/minute unit) resolve against the now clock captured
+// when the form opened and are clock-only, wrapping at midnight without
+// touching the date.
 package timeentry
 
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Clock is a wall-clock hour and minute.
@@ -37,9 +41,11 @@ func (c Clock) String() string {
 // optional space before it); 1-2 digits mean an hour; 3-4 digits mean
 // HMM/HHMM; "H:MM"/"HH:MM" require two minute digits. Without a suffix
 // hours are 24-hour (0..23); with a suffix hours must be 1..12 with
-// midnight/noon mapped correctly; minutes are 0..59. Seconds, signed
-// offsets, dates, zones and trailing garbage are rejected.
-func Parse(raw string) (clock Clock, present bool, err error) {
+// midnight/noon mapped correctly; minutes are 0..59. A leading sign
+// selects the relative form: 1-6 digits plus a unit ("h", "hr", "hrs",
+// "m", "min", "mins"), applied to now's clock. Seconds, dates, zones and
+// trailing garbage are rejected.
+func Parse(raw string, now time.Time) (clock Clock, present bool, err error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
 		return Clock{}, false, nil
@@ -47,6 +53,9 @@ func Parse(raw string) (clock Clock, present bool, err error) {
 	invalid := fmt.Errorf("invalid time %q", s)
 
 	body := strings.ToLower(s)
+	if body[0] == '+' || body[0] == '-' {
+		return parseOffset(body, now, invalid)
+	}
 	isPM := false
 	hasSuffix := false
 	for _, suf := range []struct {
@@ -120,6 +129,45 @@ func Parse(raw string) (clock Clock, present bool, err error) {
 		return Clock{}, false, invalid
 	}
 	return Clock{Hour: hour, Minute: minute}, true, nil
+}
+
+// parseOffset resolves a relative clock form: a sign, 1-6 ASCII digits and
+// a unit ("h", "hr", "hrs", "m", "min", "mins"). The offset is applied to
+// now's clock and wraps at midnight without touching the date.
+func parseOffset(s string, now time.Time, invalid error) (Clock, bool, error) {
+	rest := s[1:]
+	n, digits := 0, 0
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if c < '0' || c > '9' {
+			break
+		}
+		digits++
+		if digits > 6 {
+			return Clock{}, false, invalid
+		}
+		n = n*10 + int(c-'0')
+	}
+	if digits == 0 {
+		return Clock{}, false, invalid
+	}
+	minutes := 0
+	switch rest[digits:] {
+	case "h", "hr", "hrs":
+		minutes = n * 60
+	case "m", "min", "mins":
+		minutes = n
+	default:
+		return Clock{}, false, invalid
+	}
+	if s[0] == '-' {
+		minutes = -minutes
+	}
+	total := (now.Hour()*60 + now.Minute() + minutes) % 1440
+	if total < 0 {
+		total += 1440
+	}
+	return Clock{Hour: total / 60, Minute: total % 60}, true, nil
 }
 
 // parseDigits accumulates ASCII digits with a maximum digit count and an

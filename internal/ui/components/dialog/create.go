@@ -92,6 +92,9 @@ type CreateModel struct {
 	mode     formMode
 	selected formField
 	active   formField
+	// follow advances the form to the next row each time the user
+	// finishes a field; Recurrence is the last step and rests at the menu.
+	follow bool
 	// choiceOwner retains which outer field owns the open selector or
 	// custom editor across its close-before-result interval; input is
 	// ignored while a result is pending.
@@ -193,6 +196,10 @@ func (m *CreateModel) showAt(listName string, now time.Time) {
 	m.listName = listName
 	m.editingID = ""
 	m.resetFormState()
+	// Create opens on the first row, ready to type; resetFormState
+	// rendered the menu, so the cached frame is rebuilt after opening.
+	m.openField(fieldTitle)
+	m.rebuildPane()
 }
 
 // ShowEdit opens the edit form prefilled from an existing reminder. The
@@ -215,6 +222,9 @@ func (m *CreateModel) showEditAt(r reminders.Reminder, now time.Time) {
 	m.editingID = r.ID
 	m.listName = ""
 	m.resetFormState()
+	// Editing starts in the left-hand menu; follow is a create-time
+	// convenience, not a default the user did not ask for here.
+	m.follow = false
 
 	m.titleInput.SetValue(r.Title)
 	m.notesInput.SetValue(r.Notes)
@@ -243,6 +253,7 @@ func (m *CreateModel) resetFormState() {
 	m.mode = formBrowsing
 	m.selected = fieldTitle
 	m.active = noField
+	m.follow = true
 	m.choiceOwner = noField
 	m.choiceOpen = false
 	m.purpose = chooserNone
@@ -263,6 +274,7 @@ func (m *CreateModel) resetFormState() {
 	m.picker.SetValue("")
 	m.blurAll()
 	m.recurrenceE.Hide()
+	m.recurrenceE.Reset()
 	m.selector.Close()
 	m.rebuildPane()
 }
@@ -341,6 +353,18 @@ func (m *CreateModel) closeField() {
 	m.selected = m.active
 	m.active = noField
 	m.blurAll()
+}
+
+// advanceAfter closes a finished field. In follow mode it opens the next
+// row; follow rests at the menu once Recurrence has been finished.
+func (m *CreateModel) advanceAfter(f formField) {
+	m.closeField()
+	if !m.follow || f == fieldRecurrence {
+		return
+	}
+	next := (f + 1) % formFieldCount
+	m.selected = next
+	m.openField(next)
 }
 
 // notesEditorDoneMsg carries the result of an external $EDITOR session on
@@ -438,18 +462,25 @@ func (m *CreateModel) commitField(f formField) bool {
 	return true
 }
 
+// commitTime resolves the Time field to a canonical clock and stores it. The
+// input is rewritten to the resolved value, mirroring how the Date field
+// canonicalizes "tom" on commit, so re-entering the field shows what is
+// already committed.
 func (m *CreateModel) commitTime(raw string) bool {
 	trimmed := strings.TrimSpace(raw)
-	clock, present, err := timeentry.Parse(trimmed)
+	clock, present, err := timeentry.Parse(trimmed, m.now)
 	if err != nil {
 		m.errText = err.Error()
 		return false
 	}
-	m.committedTime = trimmed
 	if present {
+		m.committedTime = clock.String()
+		m.timeInput.SetValue(m.committedTime)
 		c := clock
 		m.timeClock = &c
 	} else {
+		m.committedTime = ""
+		m.timeInput.SetValue("")
 		m.timeClock = nil
 	}
 	m.errText = ""
@@ -465,7 +496,7 @@ func (m *CreateModel) updateTimeDraft() {
 	if strings.TrimSpace(raw) == "" {
 		return
 	}
-	clock, present, err := timeentry.Parse(strings.TrimSpace(raw))
+	clock, present, err := timeentry.Parse(strings.TrimSpace(raw), m.now)
 	switch {
 	case err != nil:
 		m.timeDraftErr = err.Error()
@@ -488,7 +519,7 @@ func (m *CreateModel) composeDue() (*time.Time, error) {
 	}
 	hour, minute := 9, 0
 	if m.committedTime != "" {
-		clock, present, err := timeentry.Parse(m.committedTime)
+		clock, present, err := timeentry.Parse(m.committedTime, m.now)
 		if err != nil {
 			return nil, err
 		}
@@ -569,7 +600,7 @@ func recurrenceLabel(rules []eventkit.RecurrenceRule) string {
 		}
 	}
 	if representable(rules) {
-		return "Custom"
+		return customLabel(rules)
 	}
 	return "Existing custom schedule"
 }
@@ -733,6 +764,7 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 	if m.recurrenceE.Visible() {
 		var cmd tea.Cmd
 		m.recurrenceE, cmd = m.recurrenceE.Update(msg)
+		m.follow = m.recurrenceE.follow
 		return m, cmd
 	}
 
@@ -742,11 +774,11 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 	case RecurrenceSubmitMsg:
 		m.recurrence = msg.Rules
 		m.recurrenceE.Hide()
-		m.finishChoiceOwner()
+		m.finishChoice(true)
 		return m, nil
 	case RecurrenceCancelMsg:
 		m.recurrenceE.Hide()
-		m.finishChoiceOwner()
+		m.finishChoice(false)
 		return m, nil
 	case selectorSelectedMsg:
 		purpose := m.purpose
@@ -757,12 +789,12 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 			if len(msg.IDs) == 1 {
 				m.priority = priorityFromID(msg.IDs[0])
 			}
-			m.finishChoiceOwner()
+			m.finishChoice(true)
 		case chooserRecurrence:
 			if len(msg.IDs) == 1 && msg.IDs[0] == "custom" {
 				// Switch into the custom editor; the owner stays retained
 				// until its Apply/Cancel result is consumed.
-				m.recurrenceE.Show(m.recurrence, m.now, m.anchorDue())
+				m.recurrenceE.Show(m.recurrence, m.now, m.anchorDue(), m.follow)
 				m.recurrenceE.SetSize(m.paneW, m.paneH)
 				return m, nil
 			}
@@ -773,13 +805,13 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 					}
 				}
 			}
-			m.finishChoiceOwner()
+			m.finishChoice(true)
 		}
 		return m, nil
 	case selectorCancelledMsg:
 		m.purpose = chooserNone
 		m.selector.Close()
-		m.finishChoiceOwner()
+		m.finishChoice(false)
 		return m, nil
 	case notesEditorDoneMsg:
 		if msg.err != nil {
@@ -788,6 +820,11 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 		}
 		m.errText = ""
 		m.notesInput.SetValue(msg.content)
+		// An $EDITOR session finishes the Notes field, so follow moves
+		// on; with follow off the field stays open as before.
+		if m.follow && m.active == fieldNotes {
+			m.advanceAfter(fieldNotes)
+		}
 		return m, nil
 	}
 
@@ -806,6 +843,11 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 		if m.mode == formBrowsing {
 			switch {
+			case key.Matches(keyMsg, m.keys.Bind("form", "follow_mode")):
+				// Toggling only arms or disarms the mode; the cursor
+				// never moves.
+				m.follow = !m.follow
+				return m, nil
 			case key.Matches(keyMsg, m.keys.Bind("form", "save")):
 				cmd := m.trySubmit()
 				return m, cmd
@@ -852,12 +894,23 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 
 		// Editing a simple field: intercept field controls and form.save.
 		switch {
+		case key.Matches(keyMsg, m.keys.Bind("form", "follow_mode")):
+			// Toggling only arms or disarms the mode; the cursor never
+			// moves and the open editor keeps its state.
+			m.follow = !m.follow
+			return m, nil
+		case m.active == fieldTime && key.Matches(keyMsg, m.keys.Bind("calendar", "reset")):
+			// Clearing an open draft mirrors the Date field: only the
+			// draft changes here, the committed value follows on finish.
+			m.timeInput.SetValue("")
+			m.updateTimeDraft()
+			return m, nil
 		case key.Matches(keyMsg, m.keys.Bind("form", "save")):
 			cmd := m.trySubmit()
 			return m, cmd
 		case key.Matches(keyMsg, m.keys.Bind("field", "confirm")):
 			if m.commitField(m.active) {
-				m.closeField()
+				m.advanceAfter(m.active)
 			}
 			return m, nil
 		case key.Matches(keyMsg, m.keys.Bind("field", "cancel")):
@@ -909,6 +962,20 @@ func (m *CreateModel) finishChoiceOwner() {
 	m.blurAll()
 }
 
+// finishChoice closes a consumed selector or custom-editor result. A
+// confirmed choice advances in follow mode; a cancelled one rests at the
+// menu, exactly like Esc in a simple field.
+func (m *CreateModel) finishChoice(confirmed bool) {
+	owner := m.choiceOwner
+	m.finishChoiceOwner()
+	if !confirmed || owner == noField || !m.follow || owner == fieldRecurrence {
+		return
+	}
+	next := (owner + 1) % formFieldCount
+	m.selected = next
+	m.openField(next)
+}
+
 // openOuterChooser opens the shared chooser for a choice field.
 func (m *CreateModel) openOuterChooser(f formField, seed string) {
 	if f == fieldPriority {
@@ -916,7 +983,7 @@ func (m *CreateModel) openOuterChooser(f formField, seed string) {
 		m.selector.Open(priorityOptions(), []string{priorityID(m.priority)}, false)
 	} else {
 		m.purpose = chooserRecurrence
-		m.selector.Open(presetOptions(), []string{matchPreset(m.recurrence)}, false)
+		m.selector.Open(presetOptions(), []string{recurrenceChoiceID(m.recurrence)}, false)
 	}
 	if seed != "" {
 		paste := tea.PasteMsg{Content: seed}
@@ -1144,6 +1211,21 @@ func hint(parts ...string) string {
 	return strings.Join(kept, "  ")
 }
 
+// followHint renders the toggle with the state the key switches to, or
+// empty when the action is disabled.
+func followHint(keys keybind.Map, follow bool) string {
+	k := short(keys, "form", "follow_mode")
+	if k == "" {
+		return ""
+	}
+	if follow {
+		return k + " follow:off"
+	}
+	return k + " follow:on"
+}
+
+func (m CreateModel) followHint() string { return followHint(m.keys, m.follow) }
+
 func (m CreateModel) footerHints() string {
 	if m.mode == formEditing && isSimpleField(m.active) {
 		if m.active == fieldNotes {
@@ -1153,6 +1235,7 @@ func (m CreateModel) footerHints() string {
 				short(m.keys, "field", "notes_newline")+" newline",
 				short(m.keys, "field", "external_editor")+" editor",
 				short(m.keys, "form", "save")+" save",
+				m.followHint(),
 			)
 		}
 		if m.active == fieldDate {
@@ -1164,12 +1247,23 @@ func (m CreateModel) footerHints() string {
 				firstShort(m.keys, "calendar", "up")+"/"+firstShort(m.keys, "calendar", "down")+" week",
 				firstShort(m.keys, "calendar", "month_prev")+"/"+firstShort(m.keys, "calendar", "month_next")+" month",
 				firstShort(m.keys, "calendar", "reset")+" reset",
+				m.followHint(),
+			)
+		}
+		if m.active == fieldTime {
+			return hint(
+				short(m.keys, "field", "confirm")+" finish",
+				short(m.keys, "field", "cancel")+" cancel",
+				short(m.keys, "form", "save")+" save",
+				firstShort(m.keys, "calendar", "reset")+" clear",
+				m.followHint(),
 			)
 		}
 		return hint(
 			short(m.keys, "field", "confirm")+" finish",
 			short(m.keys, "field", "cancel")+" cancel",
 			short(m.keys, "form", "save")+" save",
+			m.followHint(),
 		)
 	}
 	if m.selector.Visible() || m.recurrenceE.Visible() {
@@ -1181,6 +1275,7 @@ func (m CreateModel) footerHints() string {
 		short(m.keys, "form", "edit")+" edit",
 		short(m.keys, "form", "save")+" save",
 		short(m.keys, "form", "cancel")+" cancel",
+		m.followHint(),
 	)
 }
 

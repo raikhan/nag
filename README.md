@@ -116,7 +116,8 @@ Single-field dialogs (create list, confirmations) still submit with `Enter`.
 |-----|--------|
 | `Enter` | Submit dialog / open choices |
 | `Ctrl-S` | Submit dialog |
-| `Tab` / `Shift-Tab` | Next / previous field |
+| `Tab` / `j` | Next field |
+| `Shift-Tab` / `k` | Previous field |
 | `Esc` | Cancel dialog or inner chooser |
 
 ### General

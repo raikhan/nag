@@ -74,8 +74,8 @@ func Registry() []Action {
 			// dialog
 			{"dialog", "submit", []string{"enter", "ctrl+s"}, "Submit dialog"},
 			{"dialog", "cancel", []string{"esc"}, "Cancel dialog"},
-			{"dialog", "next_field", []string{"tab"}, "Next field"},
-			{"dialog", "previous_field", []string{"shift+tab"}, "Previous field"},
+			{"dialog", "next_field", []string{"tab", "j"}, "Next field"},
+			{"dialog", "previous_field", []string{"shift+tab", "k"}, "Previous field"},
 			// form
 			{"form", "next_field", []string{"tab", "j"}, "Next field"},
 			{"form", "previous_field", []string{"shift+tab", "k"}, "Previous field"},
@@ -88,6 +88,7 @@ func Registry() []Action {
 			{"form", "jump_time", []string{"i"}, "Jump to time"},
 			{"form", "jump_priority", []string{"p"}, "Jump to priority"},
 			{"form", "jump_recurrence", []string{"r"}, "Jump to recurrence"},
+			{"form", "follow_mode", []string{"ctrl+f"}, "Toggle follow mode"},
 			// field
 			{"field", "confirm", []string{"enter"}, "Finish field"},
 			{"field", "cancel", []string{"esc"}, "Cancel field"},
