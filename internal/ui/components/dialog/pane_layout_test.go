@@ -27,7 +27,7 @@ func maxLineWidth(lines []string) int {
 
 func requireLabels(t *testing.T, lines []string) {
 	t.Helper()
-	for _, label := range []string{"Title", "Notes", "Date", "Time", "Remind me", "Priority", "Recurrence"} {
+	for _, label := range []string{"Title", "Notes", "Date", "Time", "Priority", "Recurrence"} {
 		found := false
 		for _, l := range lines {
 			if strings.Contains(l, label) {

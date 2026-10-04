@@ -75,8 +75,6 @@ func openFieldFor(t *testing.T, m CreateModel, target formField) CreateModel {
 		jump = 'd'
 	case fieldTime:
 		jump = 'i'
-	case fieldAlarm:
-		jump = 'a'
 	case fieldPriority:
 		jump = 'p'
 	case fieldRecurrence:
@@ -253,8 +251,8 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 		t.Fatal("no editor may be focused while browsing")
 	}
 
-	// Tab cycles all seven rows without opening any editor.
-	order := []formField{fieldNotes, fieldDate, fieldTime, fieldAlarm, fieldPriority, fieldRecurrence, fieldTitle}
+	// Tab cycles all six rows without opening any editor.
+	order := []formField{fieldNotes, fieldDate, fieldTime, fieldPriority, fieldRecurrence, fieldTitle}
 	for _, want := range order {
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 		if m.mode != formBrowsing || m.selected != want {
@@ -314,10 +312,10 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 
 	// While editing Title, j/k and mnemonic letters remain text.
 	e := openFieldFor(t, m, fieldTitle)
-	for _, r := range "jktdiapr" {
+	for _, r := range "jktdipr" {
 		e, _ = e.Update(press(r, string(r)))
 	}
-	if e.titleInput.Value() != "jktdiapr" {
+	if e.titleInput.Value() != "jktdipr" {
 		t.Fatalf("mnemonic letters became commands: %q", e.titleInput.Value())
 	}
 	if e.mode != formEditing {
@@ -325,7 +323,7 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 	}
 	// Key releases are inert.
 	e, _ = e.Update(tea.KeyReleaseMsg{Code: 'j'})
-	if e.titleInput.Value() != "jktdiapr" {
+	if e.titleInput.Value() != "jktdipr" {
 		t.Fatalf("key release changed the text: %q", e.titleInput.Value())
 	}
 	// Esc restores the snapshot and returns to browsing.
@@ -335,9 +333,9 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 	}
 
 	// One visible selected-row treatment: the marker appears for each of the
-	// seven fields when selected.
+	// six fields when selected.
 	m.SetSize(120, 40)
-	for _, f := range []formField{fieldTitle, fieldNotes, fieldDate, fieldTime, fieldAlarm, fieldPriority, fieldRecurrence} {
+	for _, f := range []formField{fieldTitle, fieldNotes, fieldDate, fieldTime, fieldPriority, fieldRecurrence} {
 		m.selected = f
 		view := m.View()
 		if !strings.Contains(view, ">") {
@@ -951,203 +949,6 @@ func TestDateAndTimeSubmission(t *testing.T) {
 		}
 		if !strings.Contains(m2.errText, "Time does not exist on that date") {
 			t.Fatalf("error = %q", m2.errText)
-		}
-	})
-}
-
-// TestRemindMeRow covers the Remind me row: the due-date guard, the chooser
-// contents, and the sparse alarm patch it writes.
-func TestRemindMeRow(t *testing.T) {
-	loc := perth(t)
-	now := time.Date(2026, time.October, 4, 13, 15, 0, 0, loc)
-
-	t.Run("without a date the row explains itself", func(t *testing.T) {
-		m := newCreateAt(t, now)
-		m = openFieldFor(t, m, fieldTitle)
-		m, _ = m.Update(tea.PasteMsg{Content: "No due"})
-		m = finishField(t, m)
-		m, _ = m.Update(press('a', "a"))
-		if m.mode != formBrowsing || m.selected != fieldAlarm {
-			t.Fatalf("guard changed the mode: mode %v selected %d", m.mode, m.selected)
-		}
-		if m.errText != "Set a date to use an early reminder" {
-			t.Fatalf("errText = %q", m.errText)
-		}
-		if m.selector.Visible() {
-			t.Fatal("the chooser must not open without a date")
-		}
-	})
-
-	t.Run("with a date the chooser opens on None", func(t *testing.T) {
-		m := newCreateAt(t, now)
-		m = openFieldFor(t, m, fieldTitle)
-		m, _ = m.Update(tea.PasteMsg{Content: "Call mum"})
-		m = finishField(t, m)
-		m = openFieldFor(t, m, fieldDate)
-		m, _ = m.Update(tea.PasteMsg{Content: "2026-10-05"})
-		m = finishField(t, m)
-		m = openFieldFor(t, m, fieldAlarm)
-		if !m.selector.Visible() {
-			t.Fatal("the chooser did not open")
-		}
-		opts := alarmOptions()
-		want := []string{"None", "5 minutes before", "15 minutes before",
-			"30 minutes before", "1 hour before", "2 hours before", "1 day before",
-			"2 days before", "1 week before", "1 month before", "Custom…"}
-		if len(opts) != len(want) {
-			t.Fatalf("chooser rows = %d, want %d", len(opts), len(want))
-		}
-		for i, o := range opts {
-			if o.Label != want[i] {
-				t.Fatalf("row %d = %q, want %q", i, o.Label, want[i])
-			}
-			if o.ID == "attime" {
-				t.Fatalf("row %d still offers the removed attime id", i)
-			}
-		}
-		if alarmChoiceID(m) != "none" {
-			t.Fatalf("preselected row = %q, want none", alarmChoiceID(m))
-		}
-	})
-
-	t.Run("30 minutes before patches the alarm in", func(t *testing.T) {
-		m := newEditAt(t, editFixture(), now)
-		m = openFieldFor(t, m, fieldAlarm)
-		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"30m"}})
-		if m.alarmLabel() != "30 minutes before" {
-			t.Fatalf("label = %q", m.alarmLabel())
-		}
-		_, msg := ctrlS(t, m)
-		sub, ok := msg.(EditSubmitMsg)
-		if !ok {
-			t.Fatalf("save produced %T", msg)
-		}
-		if sub.Input.Alarms == nil {
-			t.Fatal("saving a new alarm must patch it")
-		}
-		want := []reminders.Alarm{{RelativeOffset: -30 * time.Minute}}
-		if !reminders.AlarmsEqual(*sub.Input.Alarms, want) {
-			t.Fatalf("alarms = %+v, want %+v", *sub.Input.Alarms, want)
-		}
-	})
-
-	// An alarm sitting exactly on the due instant is no longer selectable,
-	// but it must still round-trip unchanged when read back.
-	t.Run("an alarm at the due instant round-trips as an absolute alarm", func(t *testing.T) {
-		r := editFixture()
-		due := *r.DueDate
-		r.Alarms = []reminders.Alarm{{AbsoluteDate: &due}}
-		m := newEditAt(t, r, now)
-		if m.alarmKind != alarmAtDue {
-			t.Fatalf("alarm kind = %d, want alarmAtDue", m.alarmKind)
-		}
-		if m.alarmLabel() != "At due time" {
-			t.Fatalf("label = %q, want At due time", m.alarmLabel())
-		}
-		if id := alarmChoiceID(m); id != "none" {
-			t.Fatalf("preselected row = %q, want none", id)
-		}
-		composed, err := m.composeDue()
-		if err != nil || composed == nil {
-			t.Fatalf("compose due: %v", err)
-		}
-		want := []reminders.Alarm{{AbsoluteDate: composed}}
-		got := m.alarmInput(composed)
-		if !reminders.AlarmsEqual(got, want) {
-			t.Fatalf("alarms = %+v, want %+v", got, want)
-		}
-	})
-
-	t.Run("an untouched row sends no alarm patch", func(t *testing.T) {
-		m := newEditAt(t, editFixture(), now)
-		_, msg := ctrlS(t, m)
-		sub := msg.(EditSubmitMsg)
-		if sub.Input.Alarms != nil {
-			t.Fatalf("unchanged row patched alarms: %+v", *sub.Input.Alarms)
-		}
-	})
-
-	t.Run("an existing alarm round-trips and re-saves untouched", func(t *testing.T) {
-		r := editFixture()
-		r.Alarms = []reminders.Alarm{{RelativeOffset: -15 * time.Minute}}
-		m := newEditAt(t, r, now)
-		if m.alarmLabel() != "15 minutes before" {
-			t.Fatalf("seeded label = %q", m.alarmLabel())
-		}
-		_, msg := ctrlS(t, m)
-		sub := msg.(EditSubmitMsg)
-		if sub.Input.Alarms != nil {
-			t.Fatalf("unchanged seeded row patched alarms: %+v", *sub.Input.Alarms)
-		}
-	})
-
-	t.Run("clearing the date drops the alarm", func(t *testing.T) {
-		r := editFixture()
-		r.Alarms = []reminders.Alarm{{RelativeOffset: -15 * time.Minute}}
-		m := newEditAt(t, r, now)
-		m = openFieldFor(t, m, fieldDate)
-		m.picker.SetValue("")
-		m = finishField(t, m)
-		if m.alarmKind != alarmNone {
-			t.Fatalf("alarm kind = %d, want none", m.alarmKind)
-		}
-		if m.alarmLabel() != "None" {
-			t.Fatalf("label = %q, want None", m.alarmLabel())
-		}
-		_, msg := ctrlS(t, m)
-		sub := msg.(EditSubmitMsg)
-		if sub.Input.Alarms == nil {
-			t.Fatal("clearing the date must remove the alarm")
-		}
-		if len(*sub.Input.Alarms) != 0 {
-			t.Fatalf("alarms = %+v, want an empty removal", *sub.Input.Alarms)
-		}
-	})
-
-	t.Run("the custom row edits the lead time in place", func(t *testing.T) {
-		m := newEditAt(t, editFixture(), now)
-		m = openFieldFor(t, m, fieldAlarm)
-		m, _ = m.Update(selectorSelectedMsg{IDs: []string{alarmCustomID}})
-		if !m.alarmCustomOpen {
-			t.Fatal("the custom lead time editor did not open")
-		}
-		if m.selector.Visible() {
-			t.Fatal("the chooser must close before the editor opens")
-		}
-		m, _ = m.Update(tea.PasteMsg{Content: "2h30m"})
-		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-		if m.alarmCustomOpen {
-			t.Fatal("a valid lead time must close the editor")
-		}
-		if m.alarmOffset != 150*time.Minute {
-			t.Fatalf("offset = %v, want 2h30m", m.alarmOffset)
-		}
-		if m.alarmLabel() != "2 hours 30 minutes before" {
-			t.Fatalf("label = %q", m.alarmLabel())
-		}
-		_, msg := ctrlS(t, m)
-		sub := msg.(EditSubmitMsg)
-		want := []reminders.Alarm{{RelativeOffset: -150 * time.Minute}}
-		if sub.Input.Alarms == nil || !reminders.AlarmsEqual(*sub.Input.Alarms, want) {
-			t.Fatalf("alarms = %+v, want %+v", sub.Input.Alarms, want)
-		}
-	})
-
-	t.Run("an unparseable lead time keeps the editor open", func(t *testing.T) {
-		m := newEditAt(t, editFixture(), now)
-		m = openFieldFor(t, m, fieldAlarm)
-		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"30m"}})
-		m = openFieldFor(t, m, fieldAlarm)
-		m, _ = m.Update(selectorSelectedMsg{IDs: []string{alarmCustomID}})
-		for _, bad := range []string{"bogus", "0m", ""} {
-			m.alarmCustomInput.SetValue(bad)
-			m, _ = m.Update(press('\r', "\r"))
-			if !m.alarmCustomOpen {
-				t.Fatalf("%q closed the editor", bad)
-			}
-			if m.alarmOffset != 30*time.Minute {
-				t.Fatalf("%q changed the committed offset to %v", bad, m.alarmOffset)
-			}
 		}
 	})
 }

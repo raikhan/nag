@@ -88,7 +88,6 @@ func Registry() []Action {
 			{"form", "jump_notes", []string{"n"}, "Jump to notes"},
 			{"form", "jump_date", []string{"d"}, "Jump to date"},
 			{"form", "jump_time", []string{"i"}, "Jump to time"},
-			{"form", "jump_alarm", []string{"a"}, "Jump to remind me"},
 			{"form", "jump_priority", []string{"p"}, "Jump to priority"},
 			{"form", "jump_recurrence", []string{"r"}, "Jump to recurrence"},
 			{"form", "follow_mode", []string{"ctrl+f"}, "Toggle follow mode"},

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
@@ -51,11 +50,10 @@ type chooserPurpose int
 const (
 	chooserNone chooserPurpose = iota
 	chooserPriority
-	chooserAlarm
 	chooserRecurrence
 )
 
-// formField identifies one of the seven main form rows.
+// formField identifies one of the six main form rows.
 type formField int
 
 const (
@@ -63,24 +61,11 @@ const (
 	fieldNotes
 	fieldDate
 	fieldTime
-	fieldAlarm
 	fieldPriority
 	fieldRecurrence
 )
 
-const formFieldCount = 7
-
-// alarmKind is the shape of the Remind me row's committed value.
-const (
-	alarmNone = iota
-	alarmAtDue
-	alarmBefore
-	alarmCustom
-)
-
-// alarmCustomID is the chooser row that hands off to the free-form lead
-// time editor rather than committing an offset of its own.
-const alarmCustomID = "custom"
+const formFieldCount = 6
 
 const noField formField = -1
 
@@ -93,27 +78,16 @@ const (
 )
 
 type CreateModel struct {
-	keys       keybind.Map
-	titleInput textinput.Model
-	notesInput textarea.Model
-	timeInput  textinput.Model
-	picker     datepickerModel
-	priority   int
-	recurrence []eventkit.RecurrenceRule
-	// Remind me state, seeded from the reminder's EventKit alarms.
-	alarmKind   int
-	alarmOffset time.Duration
-	alarmAt     *time.Time
-	// The free-form lead time editor opened from the Custom… row.
-	alarmCustomInput textinput.Model
-	alarmDraftErr    string
-	// alarmCustomOpen marks that editor as the live choice surface, so
-	// keys reach its input instead of the pending-result gate.
-	alarmCustomOpen bool
-	origAlarms      []reminders.Alarm
-	selector        selectorModel
-	purpose         chooserPurpose
-	recurrenceE     RecurrenceModel
+	keys        keybind.Map
+	titleInput  textinput.Model
+	notesInput  textarea.Model
+	timeInput   textinput.Model
+	picker      datepickerModel
+	priority    int
+	recurrence  []eventkit.RecurrenceRule
+	selector    selectorModel
+	purpose     chooserPurpose
+	recurrenceE RecurrenceModel
 
 	mode     formMode
 	selected formField
@@ -181,22 +155,14 @@ func NewCreate() CreateModel {
 	tmi.Prompt = "Time:     "
 	applyInputStyles(&tmi)
 
-	aci := textinput.New()
-	aci.Placeholder = "e.g. 45m, 2h30m, 3d"
-	aci.CharLimit = 32
-	aci.SetWidth(20)
-	aci.Prompt = "Lead time: "
-	applyInputStyles(&aci)
-
 	return CreateModel{
-		titleInput:       ti,
-		notesInput:       ni,
-		timeInput:        tmi,
-		alarmCustomInput: aci,
-		priority:         reminders.PriorityNone,
-		active:           noField,
-		selected:         fieldTitle,
-		viewport:         viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
+		titleInput: ti,
+		notesInput: ni,
+		timeInput:  tmi,
+		priority:   reminders.PriorityNone,
+		active:     noField,
+		selected:   fieldTitle,
+		viewport:   viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
 	}
 }
 
@@ -211,7 +177,6 @@ func (m *CreateModel) SetKeys(keys keybind.Map) {
 	km.InsertNewline = key.NewBinding(key.WithKeys(keys.Aliases("field", "notes_newline")...))
 	m.notesInput.KeyMap = km
 	projectTextInputKeys(&m.timeInput, keys, "field")
-	projectTextInputKeys(&m.alarmCustomInput, keys, "field")
 }
 
 func midnightOf(t time.Time) time.Time {
@@ -279,24 +244,6 @@ func (m *CreateModel) showEditAt(r reminders.Reminder, now time.Time) {
 		m.origDue = &due
 	}
 	m.priority = r.Priority
-	// Seed the row from the reminder's first alarm: EventKit returns the
-	// alerts nag can write, so the first is the whole story.
-	m.origAlarms = append([]reminders.Alarm(nil), r.Alarms...)
-	if len(r.Alarms) > 0 {
-		a := r.Alarms[0]
-		due, derr := m.composeDue()
-		switch {
-		case a.RelativeOffset < 0:
-			m.alarmKind = alarmBefore
-			m.alarmOffset = -a.RelativeOffset
-		case a.AbsoluteDate != nil && derr == nil && due != nil && sameSecond(*a.AbsoluteDate, *due):
-			m.alarmKind = alarmAtDue
-		case a.AbsoluteDate != nil:
-			at := *a.AbsoluteDate
-			m.alarmKind = alarmCustom
-			m.alarmAt = &at
-		}
-	}
 	m.setOrigRules(r.RecurrenceRules)
 	m.rebuildPane()
 }
@@ -314,13 +261,6 @@ func (m *CreateModel) resetFormState() {
 	m.priority = reminders.PriorityNone
 	m.recurrence = nil
 	m.origRules = nil
-	m.alarmKind = alarmNone
-	m.alarmOffset = 0
-	m.alarmAt = nil
-	m.alarmDraftErr = ""
-	m.alarmCustomInput.SetValue("")
-	m.alarmCustomOpen = false
-	m.origAlarms = nil
 	m.committedDate = ""
 	m.committedTime = ""
 	m.timeClock = nil
@@ -349,7 +289,6 @@ func (m *CreateModel) blurAll() {
 	m.titleInput.Blur()
 	m.notesInput.Blur()
 	m.timeInput.Blur()
-	m.alarmCustomInput.Blur()
 	m.picker.Blur()
 }
 
@@ -380,13 +319,6 @@ func isSimpleField(f formField) bool {
 
 // openField begins editing a field. Choice fields open the shared selector.
 func (m *CreateModel) openField(f formField) {
-	// The alert is derived from the due date, so the row is inert without
-	// one. Guarding before switching modes leaves browsing untouched and
-	// makes the row explain itself.
-	if f == fieldAlarm && m.committedDate == "" {
-		m.errText = "Set a date to use an early reminder"
-		return
-	}
 	m.mode = formEditing
 	m.active = f
 	m.blurAll()
@@ -404,11 +336,6 @@ func (m *CreateModel) openField(f formField) {
 		m.editSnapshot = m.timeInput.Value()
 		m.timeInput.Focus()
 		m.updateTimeDraft()
-	case fieldAlarm:
-		m.choiceOwner = fieldAlarm
-		m.choiceOpen = true
-		m.alarmCustomInput.Blur()
-		m.openOuterChooser(fieldAlarm, "")
 	case fieldPriority:
 		m.choiceOwner = fieldPriority
 		m.choiceOpen = true
@@ -418,17 +345,6 @@ func (m *CreateModel) openField(f formField) {
 		m.choiceOpen = true
 		m.openOuterChooser(fieldRecurrence, "")
 	}
-}
-
-// nextWalkField returns the row a follow walk moves to from f, skipping the
-// Remind me row while no date is committed. The row is inert then, so
-// stopping on it would strand the walk on an error.
-func (m *CreateModel) nextWalkField(f formField) formField {
-	next := (f + 1) % formFieldCount
-	if next == fieldAlarm && m.committedDate == "" {
-		next = (next + 1) % formFieldCount
-	}
-	return next
 }
 
 // closeField leaves editing and returns to browsing the same row.
@@ -446,7 +362,7 @@ func (m *CreateModel) advanceAfter(f formField) {
 	if !m.follow || f == fieldRecurrence {
 		return
 	}
-	next := m.nextWalkField(f)
+	next := (f + 1) % formFieldCount
 	m.selected = next
 	m.openField(next)
 }
@@ -528,11 +444,6 @@ func (m *CreateModel) commitField(f formField) bool {
 			m.timeInput.SetValue("")
 			m.timeDraft = nil
 			m.timeDraftErr = ""
-			// An alarm without a due date is not representable, and the
-			// row is inert in that state, so clearing the date clears it.
-			m.alarmKind = alarmNone
-			m.alarmOffset = 0
-			m.alarmAt = nil
 			m.errText = ""
 			return true
 		}
@@ -704,161 +615,6 @@ func priorityOptions() []selectorOption {
 	}
 }
 
-// alarmPresets are the Remind me chooser rows, mirroring the Reminders
-// app's own early-reminder list. Every offset is a relative alarm, so the
-// alert follows the due date when it moves.
-var alarmPresets = []struct{ id, label string }{
-	{"none", "None"},
-	{"5m", "5 minutes before"},
-	{"15m", "15 minutes before"},
-	{"30m", "30 minutes before"},
-	{"1h", "1 hour before"},
-	{"2h", "2 hours before"},
-	{"1d", "1 day before"},
-	{"2d", "2 days before"},
-	{"1w", "1 week before"},
-	{"1m", "1 month before"},
-}
-
-func alarmOptions() []selectorOption {
-	opts := make([]selectorOption, 0, len(alarmPresets)+1)
-	for _, p := range alarmPresets {
-		opts = append(opts, selectorOption{ID: p.id, Label: p.label})
-	}
-	// Free-form lead time, so an offset the app's own list omits is still
-	// reachable.
-	opts = append(opts, selectorOption{ID: alarmCustomID, Label: "Custom…"})
-	return opts
-}
-
-// alarmPresetOffset maps a preset ID to its lead time, reporting whether the
-// ID is a known offset preset.
-func alarmPresetOffset(id string) (time.Duration, bool) {
-	switch id {
-	case "5m":
-		return 5 * time.Minute, true
-	case "15m":
-		return 15 * time.Minute, true
-	case "30m":
-		return 30 * time.Minute, true
-	case "1h":
-		return time.Hour, true
-	case "2h":
-		return 2 * time.Hour, true
-	case "1d":
-		return 24 * time.Hour, true
-	case "2d":
-		return 48 * time.Hour, true
-	case "1w":
-		return 168 * time.Hour, true
-	case "1m":
-		return 30 * 24 * time.Hour, true
-	}
-	return 0, false
-}
-
-// alarmChoiceID preselects the chooser row matching the current value.
-// "attime" is no longer a row, so an absolute alarm sitting on the due
-// instant preselects None rather than a missing ID.
-func alarmChoiceID(m CreateModel) string {
-	if m.alarmKind == alarmBefore {
-		for _, p := range alarmPresets {
-			if off, ok := alarmPresetOffset(p.id); ok && off == m.alarmOffset {
-				return p.id
-			}
-		}
-	}
-	return "none"
-}
-
-// alarmFromID commits a chooser row into the row's state. The custom row is a
-// placeholder: the real offset arrives from the free-form editor.
-func alarmFromID(id string) (kind int, offset time.Duration) {
-	if id == alarmCustomID {
-		return alarmBefore, 0
-	}
-	if off, ok := alarmPresetOffset(id); ok {
-		return alarmBefore, off
-	}
-	return alarmNone, 0
-}
-
-// alarmLeadSeed renders the committed offset back into the free-form
-// editor's input grammar, so opening Custom… on an existing lead time offers
-// something to edit rather than an empty box.
-func (m CreateModel) alarmLeadSeed() string {
-	if m.alarmKind != alarmBefore || m.alarmOffset <= 0 {
-		return ""
-	}
-	d := m.alarmOffset
-	if d%time.Hour != 0 {
-		return d.String()
-	}
-	return strconv.Itoa(int(d/time.Hour)) + "h"
-}
-
-// alarmLabel renders the Remind me row: None, a preset label for a known
-// offset, human text for a free-form lead time, or "At Jan 2 15:04" for an
-// absolute alarm that is not the due instant.
-func (m CreateModel) alarmLabel() string {
-	switch m.alarmKind {
-	case alarmAtDue:
-		return "At due time"
-	case alarmBefore:
-		for _, p := range alarmPresets {
-			if off, ok := alarmPresetOffset(p.id); ok && off == m.alarmOffset {
-				return p.label
-			}
-		}
-		return leadTimeText(m.alarmOffset) + " before"
-	case alarmCustom:
-		if m.alarmAt != nil {
-			return "At " + m.alarmAt.Format("Jan 2 15:04")
-		}
-	}
-	return "None"
-}
-
-// leadTimeText renders a free-form lead time as hours and minutes, dropping
-// whichever unit is zero so 45m reads "45 minutes" and 2h30m reads
-// "2 hours 30 minutes".
-func leadTimeText(d time.Duration) string {
-	if d <= 0 {
-		return "None"
-	}
-	h, m := int(d/time.Hour), int(d%time.Hour/time.Minute)
-	switch {
-	case h == 0:
-		return strconv.Itoa(m) + " minutes"
-	case m == 0:
-		return strconv.Itoa(h) + " hours"
-	}
-	return strconv.Itoa(h) + " hours " + strconv.Itoa(m) + " minutes"
-}
-
-// alarmInput turns the Remind me row into the EventKit alarms to write. It
-// returns nil when the row is "None".
-func (m CreateModel) alarmInput(due *time.Time) []reminders.Alarm {
-	switch m.alarmKind {
-	case alarmAtDue:
-		if due == nil {
-			return nil
-		}
-		return []reminders.Alarm{{AbsoluteDate: due}}
-	case alarmBefore:
-		if m.alarmOffset <= 0 {
-			return nil
-		}
-		return []reminders.Alarm{{RelativeOffset: -m.alarmOffset}}
-	case alarmCustom:
-		if m.alarmAt == nil {
-			return nil
-		}
-		return []reminders.Alarm{{AbsoluteDate: m.alarmAt}}
-	}
-	return nil
-}
-
 func priorityFromID(id string) int {
 	switch id {
 	case "low":
@@ -905,8 +661,6 @@ func (m CreateModel) fieldLabel(f formField) string {
 		return "Date"
 	case fieldTime:
 		return "Time"
-	case fieldAlarm:
-		return "Remind me"
 	case fieldPriority:
 		return "Priority"
 	default:
@@ -924,8 +678,6 @@ func (m CreateModel) jumpAction(f formField) string {
 		return "jump_date"
 	case fieldTime:
 		return "jump_time"
-	case fieldAlarm:
-		return "jump_alarm"
 	case fieldPriority:
 		return "jump_priority"
 	default:
@@ -971,8 +723,6 @@ func (m CreateModel) summaryValue(f formField) string {
 			return clock.String() + " " + m.zoneAbbrev()
 		}
 		return "None"
-	case fieldAlarm:
-		return m.alarmLabel()
 	case fieldPriority:
 		return priorityLabel(m.priority)
 	default:
@@ -1040,23 +790,6 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 				m.priority = priorityFromID(msg.IDs[0])
 			}
 			m.finishChoice(true)
-		case chooserAlarm:
-			if len(msg.IDs) == 1 {
-				if msg.IDs[0] == alarmCustomID {
-					// Hand off to the free-form editor; the choice stays
-					// open until the lead time is committed.
-					m.alarmCustomInput.SetValue(m.alarmLeadSeed())
-					m.alarmDraftErr = ""
-					m.alarmCustomOpen = true
-					m.alarmCustomInput.Focus()
-					return m, nil
-				}
-				m.alarmKind, m.alarmOffset = alarmFromID(msg.IDs[0])
-				if m.alarmKind != alarmCustom {
-					m.alarmAt = nil
-				}
-			}
-			m.finishChoice(true)
 		case chooserRecurrence:
 			if len(msg.IDs) == 1 && msg.IDs[0] == "custom" {
 				// Switch into the custom editor; the owner stays retained
@@ -1102,9 +835,8 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Input is ignored while a selector/custom result is pending, except in
-	// the free-form lead time editor, which is itself the live surface.
-	if m.choiceOpen && !m.alarmCustomOpen {
+	// Input is ignored while a selector/custom result is pending.
+	if m.choiceOpen {
 		return m, nil
 	}
 
@@ -1147,10 +879,6 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 				m.selected = fieldTime
 				m.openField(fieldTime)
 				return m, nil
-			case key.Matches(keyMsg, m.keys.Bind("form", "jump_alarm")):
-				m.selected = fieldAlarm
-				m.openField(fieldAlarm)
-				return m, nil
 			case key.Matches(keyMsg, m.keys.Bind("form", "jump_priority")):
 				m.selected = fieldPriority
 				m.openField(fieldPriority)
@@ -1180,28 +908,6 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 		case key.Matches(keyMsg, m.keys.Bind("form", "save")):
 			cmd := m.trySubmit()
 			return m, cmd
-		case m.active == fieldAlarm && m.alarmCustomOpen && key.Matches(keyMsg, m.keys.Bind("field", "cancel")):
-			// Esc abandons the draft without touching the committed value.
-			m.alarmCustomInput.SetValue("")
-			m.alarmDraftErr = ""
-			m.alarmCustomOpen = false
-			m.finishChoice(false)
-			return m, nil
-		case m.active == fieldAlarm && m.alarmCustomOpen && key.Matches(keyMsg, m.keys.Bind("field", "confirm")):
-			// The lead time commits only once it parses; a bad draft keeps
-			// the editor open so the value can be corrected.
-			d, err := timeentry.ParseLead(m.alarmCustomInput.Value())
-			if err != nil {
-				m.alarmDraftErr = err.Error()
-				return m, nil
-			}
-			m.alarmKind, m.alarmOffset = alarmBefore, d
-			m.alarmAt = nil
-			m.alarmCustomInput.SetValue("")
-			m.alarmDraftErr = ""
-			m.alarmCustomOpen = false
-			m.finishChoice(true)
-			return m, nil
 		case key.Matches(keyMsg, m.keys.Bind("field", "confirm")):
 			if m.commitField(m.active) {
 				m.advanceAfter(m.active)
@@ -1224,12 +930,6 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 
 	// Forward everything else to the active simple editor.
 	var cmd tea.Cmd
-	if m.alarmCustomOpen {
-		m.alarmCustomInput, cmd = m.alarmCustomInput.Update(msg)
-		// Typing clears a stale parse error without committing.
-		m.alarmDraftErr = ""
-		return m, cmd
-	}
 	switch m.active {
 	case fieldTitle:
 		m.titleInput, cmd = m.titleInput.Update(msg)
@@ -1253,7 +953,6 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 // selector or custom editor result.
 func (m *CreateModel) finishChoiceOwner() {
 	m.choiceOpen = false
-	m.alarmCustomOpen = false
 	if m.choiceOwner != noField {
 		m.mode = formBrowsing
 		m.selected = m.choiceOwner
@@ -1272,7 +971,7 @@ func (m *CreateModel) finishChoice(confirmed bool) {
 	if !confirmed || owner == noField || !m.follow || owner == fieldRecurrence {
 		return
 	}
-	next := m.nextWalkField(owner)
+	next := (owner + 1) % formFieldCount
 	m.selected = next
 	m.openField(next)
 }
@@ -1282,9 +981,6 @@ func (m *CreateModel) openOuterChooser(f formField, seed string) {
 	if f == fieldPriority {
 		m.purpose = chooserPriority
 		m.selector.Open(priorityOptions(), []string{priorityID(m.priority)}, false)
-	} else if f == fieldAlarm {
-		m.purpose = chooserAlarm
-		m.selector.Open(alarmOptions(), []string{alarmChoiceID(*m)}, false)
 	} else {
 		m.purpose = chooserRecurrence
 		m.selector.Open(presetOptions(), []string{recurrenceChoiceID(m.recurrence)}, false)
@@ -1363,18 +1059,11 @@ func (m *CreateModel) trySubmit() tea.Cmd {
 		DueDate:         due,
 		Priority:        m.priority,
 		RecurrenceRules: m.recurrence,
-		Alarms:          m.alarmInput(due),
 	}
 
 	return func() tea.Msg {
 		return CreateSubmitMsg{Input: input}
 	}
-}
-
-// sameSecond compares two instants at second precision, the resolution
-// EventKit stores alarms with.
-func sameSecond(a, b time.Time) bool {
-	return a.Truncate(time.Second).Equal(b.Truncate(time.Second))
 }
 
 func (m CreateModel) buildEditCmd(title string, due *time.Time, clearDue bool) tea.Cmd {
@@ -1404,16 +1093,6 @@ func (m CreateModel) buildEditCmd(title string, due *time.Time, clearDue bool) t
 		rules := make([]eventkit.RecurrenceRule, 0, len(m.recurrence))
 		rules = append(rules, m.recurrence...)
 		input.RecurrenceRules = &rules
-	}
-	// The alarm is anchored to the effective due instant, which is the
-	// composed value even when the due patch itself is empty.
-	alarmDue, err := m.composeDue()
-	if err != nil {
-		alarmDue = nil
-	}
-	if !reminders.AlarmsEqual(m.alarmInput(alarmDue), m.origAlarms) {
-		alarms := m.alarmInput(alarmDue)
-		input.Alarms = &alarms
 	}
 
 	return func() tea.Msg {
@@ -1653,24 +1332,6 @@ func (m *CreateModel) paneContent(width, height int) (string, int) {
 			b.WriteString("\n")
 			b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).
 				Render("Blank time with a date means midnight " + m.zoneAbbrev()))
-			return b.String(), 0
-		case fieldAlarm:
-			if !m.alarmCustomOpen {
-				break
-			}
-			m.alarmCustomInput.SetWidth(width)
-			var b strings.Builder
-			b.WriteString(m.alarmCustomInput.View())
-			b.WriteString("\n")
-			switch {
-			case m.alarmDraftErr != "":
-				b.WriteString(lipgloss.NewStyle().Foreground(styles.Red).Render(m.alarmDraftErr))
-			default:
-				if d, err := timeentry.ParseLead(m.alarmCustomInput.Value()); err == nil {
-					b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).
-						Render("→ " + d.String() + " before"))
-				}
-			}
 			return b.String(), 0
 		}
 	}

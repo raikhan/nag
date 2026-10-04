@@ -67,16 +67,6 @@ type Reminder struct {
 	ModifiedAt      *time.Time
 	Recurring       bool
 	RecurrenceRules []eventkit.RecurrenceRule
-	Alarms          []Alarm
-}
-
-// Alarm is one notification alert on a reminder. Exactly one of
-// AbsoluteDate or RelativeOffset is set; a negative RelativeOffset fires
-// before the due date. An alarm with neither (including a zero offset) is
-// invalid: go-eventkit's marshal drops it and no alarm is created.
-type Alarm struct {
-	AbsoluteDate   *time.Time    `json:"absoluteDate,omitempty"`
-	RelativeOffset time.Duration `json:"relativeOffset,omitempty"`
 }
 
 type CreateReminderInput struct {
@@ -86,7 +76,6 @@ type CreateReminderInput struct {
 	Priority        int
 	Notes           string
 	RecurrenceRules []eventkit.RecurrenceRule
-	Alarms          []Alarm
 }
 
 type UpdateReminderInput struct {
@@ -96,5 +85,4 @@ type UpdateReminderInput struct {
 	ClearDueDate    bool
 	Priority        *int
 	RecurrenceRules *[]eventkit.RecurrenceRule
-	Alarms          *[]Alarm
 }
