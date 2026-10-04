@@ -1,8 +1,10 @@
 package dialog
 
 import (
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/oronbz/nag/internal/keybind"
 	"github.com/oronbz/nag/internal/ui/styles"
 )
 
@@ -17,6 +19,7 @@ type ConfirmYesMsg struct{ Action ConfirmAction }
 type ConfirmNoMsg struct{}
 
 type ConfirmModel struct {
+	keys    keybind.Map
 	message string
 	action  ConfirmAction
 	visible bool
@@ -26,6 +29,11 @@ type ConfirmModel struct {
 
 func NewConfirm() ConfirmModel {
 	return ConfirmModel{}
+}
+
+// SetKeys installs the compiled key bindings used by this dialog.
+func (m *ConfirmModel) SetKeys(keys keybind.Map) {
+	m.keys = keys
 }
 
 func (m *ConfirmModel) Show(message string, action ConfirmAction) {
@@ -54,12 +62,12 @@ func (m ConfirmModel) Update(msg tea.Msg) (ConfirmModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "y", "Y", "enter":
+		if key.Matches(msg, m.keys.Bind("confirm", "yes")) {
 			action := m.action
 			m.Hide()
 			return m, func() tea.Msg { return ConfirmYesMsg{Action: action} }
-		case "n", "N", "esc":
+		}
+		if key.Matches(msg, m.keys.Bind("confirm", "no")) {
 			m.Hide()
 			return m, func() tea.Msg { return ConfirmNoMsg{} }
 		}
@@ -74,9 +82,11 @@ func (m ConfirmModel) View() string {
 	}
 
 	title := styles.DialogTitleStyle.Render("Confirm")
+	yes := keybind.ShortKeys(m.keys.Aliases("confirm", "yes"))
+	no := keybind.ShortKeys(m.keys.Aliases("confirm", "no"))
 	content := title + "\n\n" +
 		m.message + "\n\n" +
-		lipgloss.NewStyle().Foreground(styles.DimGray).Render("y: yes  n/Esc: no")
+		lipgloss.NewStyle().Foreground(styles.DimGray).Render(yes+": yes  "+no+": no")
 
 	dialog := styles.DialogStyle.Render(content)
 

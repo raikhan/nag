@@ -6,24 +6,24 @@ import (
 	"github.com/oronbz/nag/internal/ui/messages"
 )
 
-func FetchReminders(client *reminders.Client, listName string, showCompleted bool) tea.Cmd {
+func FetchReminders(client *reminders.Client, listID, listName string, showCompleted bool) tea.Cmd {
 	return func() tea.Msg {
 		items, err := client.Reminders(listName, showCompleted)
-		return messages.RemindersLoadedMsg{Reminders: items, Err: err}
+		return messages.RemindersLoadedMsg{Reminders: items, ListID: listID, Err: err}
 	}
 }
 
 func FetchTodayReminders(client *reminders.Client, showCompleted bool) tea.Cmd {
 	return func() tea.Msg {
 		items, err := client.TodayReminders(showCompleted)
-		return messages.RemindersLoadedMsg{Reminders: items, Err: err}
+		return messages.RemindersLoadedMsg{Reminders: items, ListID: reminders.SmartListToday, Err: err}
 	}
 }
 
 func FetchScheduledReminders(client *reminders.Client, showCompleted bool) tea.Cmd {
 	return func() tea.Msg {
 		items, err := client.ScheduledReminders(showCompleted)
-		return messages.RemindersLoadedMsg{Reminders: items, Err: err}
+		return messages.RemindersLoadedMsg{Reminders: items, ListID: reminders.SmartListScheduled, Err: err}
 	}
 }
 

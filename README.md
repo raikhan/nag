@@ -58,16 +58,21 @@ On first run, macOS will prompt for Reminders access. You can manage this in **S
 
 ## Key Bindings
 
+All key bindings are configurable in `~/.config/nag/config.toml` (or
+`$XDG_CONFIG_HOME/nag/config.toml`). Run `nag config init` to write the
+defaults, and `nag help` to list the bindings currently in effect.
+
 ### Navigation
 
 | Key | Action |
 |-----|--------|
-| `j` / `k`, `↑` / `↓` | Navigate |
+| `j` / `k`, `↑` / `↓` | Navigate (never lands on a list separator) |
 | `Enter` | Select list |
 | `Tab` / `Shift-Tab` | Switch panel |
 | `g` / `G` | Jump to top / bottom |
-| `Ctrl-d` / `Ctrl-u` | Page down / page up |
+| `Ctrl-u` / `Ctrl-d` | Half page up / down |
 | `/` | Filter / search |
+| `z` | Ace jump to any visible list or reminder row |
 | Left click | Focus panel |
 | Mouse wheel | Scroll |
 
@@ -84,6 +89,15 @@ On first run, macOS will prompt for Reminders access. You can manage this in **S
 | `c` | Toggle show completed |
 | `r` | Refresh |
 
+### Dialogs
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Submit dialog / open choices |
+| `Ctrl-S` | Submit dialog |
+| `Tab` / `Shift-Tab` | Next / previous field |
+| `Esc` | Cancel dialog or inner chooser |
+
 ### General
 
 | Key | Action |
@@ -91,6 +105,19 @@ On first run, macOS will prompt for Reminders access. You can manage this in **S
 | `?` | Toggle help overlay |
 | `Esc` | Close dialog / overlay |
 | `q` / `Ctrl-C` | Quit |
+
+### Date entry (due date)
+
+Org-mode style: `today`, `tom`, `tue`, `eow`, `eom`, `+2d`, `+7w`, `+2tue`,
+`sep 15`, `2026-10-31 15:00`, … A keyboard calendar (Ctrl-h/J/K/L moves the
+date by a day/week) and live autocomplete appear while the due field is
+focused.
+
+### Recurrence
+
+Daily, weekly, monthly, yearly and common presets via the fuzzy selector; the
+`Custom…` editor covers intervals, weekday/day-of-month patterns and end
+conditions, and round-trips natively with Apple Reminders.
 
 ## Layout
 

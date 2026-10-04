@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
+	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/oronbz/nag/internal/config"
+	"github.com/oronbz/nag/internal/keybind"
 	"github.com/oronbz/nag/internal/reminders"
 	"github.com/oronbz/nag/internal/ui"
 )
@@ -23,17 +26,39 @@ func getVersion() string {
 }
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+	args := os.Args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "config":
+			if len(args) != 2 || args[1] != "init" {
+				fmt.Fprintln(os.Stderr, "Usage: nag config init")
+				os.Exit(1)
+			}
+			path, created, err := config.Init()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			if created {
+				fmt.Printf("Created config: %s\n", path)
+			} else {
+				fmt.Printf("Config already exists: %s\n", path)
+			}
+			return
 		case "help", "--help", "-h":
-			printHelp()
+			keys, _ := loadKeysOrExit()
+			printHelp(keys)
 			return
 		case "version", "--version", "-v":
 			fmt.Println("nag " + getVersion())
 			return
+		default:
+			fmt.Fprintln(os.Stderr, cliUsage())
+			os.Exit(1)
 		}
 	}
 
+	keys, cfg := loadKeysOrExit()
 	client, err := reminders.New()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to access Reminders.")
@@ -42,7 +67,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	model := ui.NewModel(client)
+	model := ui.NewModel(client, keys, cfg.AceAlphabet)
 	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -50,34 +75,64 @@ func main() {
 	}
 }
 
-func printHelp() {
-	fmt.Print(`nag — A terminal UI for Apple Reminders
+// loadKeysOrExit loads the user config and compiles key bindings. Any failure
+// exits before Reminders/EventKit access is attempted.
+func loadKeysOrExit() (keybind.Map, config.Config) {
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	keys, err := keybind.Compile(cfg.Keys)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	return keys, cfg
+}
+
+func cliUsage() string {
+	return `nag — A terminal UI for Apple Reminders
 
 Usage:
   nag              Launch the TUI
+  nag config init  Write the default config file
   nag help         Show this help message
   nag version      Show version
 
 Note:
   On first run, macOS will prompt for Reminders access.
   You can manage this in System Settings > Privacy & Security > Reminders.
+`
+}
 
+func printHelp(keys keybind.Map) {
+	fmt.Print(cliUsage())
+	fmt.Print(`
 Keybindings (inside TUI):
-  j/k, ↑/↓            Navigate lists
-  g / G                Jump to top / bottom
-  Ctrl-u / Ctrl-d      Page up / page down
-  Enter                Select list
-  Tab / Shift-Tab      Switch panel
-  Space / x            Toggle reminder complete
-  n                    New reminder / list (context-sensitive)
-  e                    Edit reminder / list (context-sensitive)
-  d                    Delete reminder / list (with confirmation)
-  o                    Open in Apple Reminders
-  c                    Toggle show completed
-  r                    Refresh
-  /                    Filter / search
-  ?                    Show all keybindings
-  Esc                  Close dialog / popup
-  q, Ctrl-C            Quit
+
+`)
+	for _, scope := range keybind.Scopes() {
+		var lines []string
+		for _, a := range keybind.Registry() {
+			if a.Scope != scope {
+				continue
+			}
+			aliases := keys.Aliases(scope, a.Name)
+			if len(aliases) == 0 {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf("  %-22s%s", keybind.ShortKeys(aliases)+":", a.Help))
+		}
+		if len(lines) == 0 {
+			continue
+		}
+		fmt.Println(keybind.ScopeTitle(scope) + ":")
+		fmt.Println(strings.Join(lines, "\n"))
+		fmt.Println()
+	}
+	fmt.Print(`Note:
+  On first run, macOS will prompt for Reminders access.
+  You can manage this in System Settings > Privacy & Security > Reminders.
 `)
 }

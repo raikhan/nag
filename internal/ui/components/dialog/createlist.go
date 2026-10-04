@@ -3,9 +3,11 @@ package dialog
 import (
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/oronbz/nag/internal/keybind"
 	"github.com/oronbz/nag/internal/ui/styles"
 )
 
@@ -19,6 +21,7 @@ type EditListSubmitMsg struct {
 }
 
 type CreateListModel struct {
+	keys       keybind.Map
 	titleInput textinput.Model
 	editingID  string
 	visible    bool
@@ -35,6 +38,12 @@ func NewCreateList() CreateListModel {
 	applyInputStyles(&ti)
 
 	return CreateListModel{titleInput: ti}
+}
+
+// SetKeys installs the compiled key bindings used by this dialog.
+func (m *CreateListModel) SetKeys(keys keybind.Map) {
+	m.keys = keys
+	projectTextInputKeys(&m.titleInput, keys)
 }
 
 func (m *CreateListModel) Show() {
@@ -76,11 +85,11 @@ func (m CreateListModel) Update(msg tea.Msg) (CreateListModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "esc":
+		if key.Matches(msg, m.keys.Bind("dialog", "cancel")) {
 			m.Hide()
 			return m, nil
-		case "enter":
+		}
+		if key.Matches(msg, m.keys.Bind("dialog", "submit")) {
 			title := strings.TrimSpace(m.titleInput.Value())
 			if title == "" {
 				return m, nil
@@ -109,10 +118,12 @@ func (m CreateListModel) View() string {
 	}
 
 	dialogTitle := "New List"
-	footer := "Enter: create  Esc: cancel"
+	footer := keybind.ShortKeys(m.keys.Aliases("dialog", "submit")) + ": create  " +
+		keybind.ShortKeys(m.keys.Aliases("dialog", "cancel")) + ": cancel"
 	if m.isEditing() {
 		dialogTitle = "Edit List"
-		footer = "Enter: save  Esc: cancel"
+		footer = keybind.ShortKeys(m.keys.Aliases("dialog", "submit")) + ": save  " +
+			keybind.ShortKeys(m.keys.Aliases("dialog", "cancel")) + ": cancel"
 	}
 
 	title := styles.DialogTitleStyle.Render(dialogTitle)

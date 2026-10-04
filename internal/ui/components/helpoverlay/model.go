@@ -1,11 +1,14 @@
 package helpoverlay
 
 import (
+	"fmt"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/oronbz/nag/internal/keybind"
 	"github.com/oronbz/nag/internal/ui/styles"
 )
 
@@ -14,6 +17,7 @@ type Model struct {
 	visible  bool
 	width    int
 	height   int
+	keys     keybind.Map
 }
 
 func New() Model {
@@ -32,7 +36,35 @@ func (m *Model) SetSize(width, height int) {
 		vh = 20
 	}
 	m.viewport = viewport.New(viewport.WithWidth(vw-4), viewport.WithHeight(vh-4))
-	m.viewport.SetContent(helpContent())
+	m.viewport.KeyMap = m.projectViewportKeys()
+	m.viewport.SetContent(m.helpContent())
+}
+
+// SetKeys stores the compiled bindings, projects keys.help into the viewport
+// keymap, and regenerates the overlay content from the registry.
+func (m *Model) SetKeys(keys keybind.Map) {
+	m.keys = keys
+	m.viewport.KeyMap = m.projectViewportKeys()
+	m.viewport.SetContent(m.helpContent())
+}
+
+// projectViewportKeys maps the help scope's scroll bindings onto
+// viewport.DefaultKeyMap fields.
+func (m Model) projectViewportKeys() viewport.KeyMap {
+	vk := viewport.DefaultKeyMap()
+	vk.PageDown = newHelpBinding(m.keys, "page_down")
+	vk.PageUp = newHelpBinding(m.keys, "page_up")
+	vk.HalfPageUp = newHelpBinding(m.keys, "half_page_up")
+	vk.HalfPageDown = newHelpBinding(m.keys, "half_page_down")
+	vk.Up = newHelpBinding(m.keys, "up")
+	vk.Down = newHelpBinding(m.keys, "down")
+	vk.Left = newHelpBinding(m.keys, "left")
+	vk.Right = newHelpBinding(m.keys, "right")
+	return vk
+}
+
+func newHelpBinding(keys keybind.Map, action string) key.Binding {
+	return key.NewBinding(key.WithKeys(keys.Aliases("help", action)...))
 }
 
 func (m *Model) Toggle() {
@@ -70,43 +102,39 @@ func (m Model) View() string {
 	)
 }
 
-func helpContent() string {
+// helpContent renders one group per registry scope, one line per action,
+// using the configured bindings. Disabled actions are omitted.
+func (m Model) helpContent() string {
 	k := styles.HelpKeyStyle
 	d := styles.HelpDescStyle
 	h := styles.HelpHeaderStyle
 
 	var sb strings.Builder
-
-	sb.WriteString(h.Render("Navigation"))
-	sb.WriteString("\n")
-	sb.WriteString(k.Render("j / ↓") + d.Render("Move down") + "\n")
-	sb.WriteString(k.Render("k / ↑") + d.Render("Move up") + "\n")
-	sb.WriteString(k.Render("Enter") + d.Render("Select list") + "\n")
-	sb.WriteString(k.Render("Tab / S-Tab") + d.Render("Switch panel") + "\n")
-	sb.WriteString(k.Render("g") + d.Render("Jump to top") + "\n")
-	sb.WriteString(k.Render("G") + d.Render("Jump to bottom") + "\n")
-	sb.WriteString(k.Render("Ctrl-d") + d.Render("Page down") + "\n")
-	sb.WriteString(k.Render("Ctrl-u") + d.Render("Page up") + "\n")
-
-	sb.WriteString("\n")
-	sb.WriteString(h.Render("Actions"))
-	sb.WriteString("\n")
-	sb.WriteString(k.Render("Space / x") + d.Render("Toggle reminder complete") + "\n")
-	sb.WriteString(k.Render("n") + d.Render("New reminder / list") + "\n")
-	sb.WriteString(k.Render("e") + d.Render("Edit reminder / list") + "\n")
-	sb.WriteString(k.Render("d") + d.Render("Delete reminder / list") + "\n")
-	sb.WriteString(k.Render("o") + d.Render("Open in Reminders app") + "\n")
-	sb.WriteString(k.Render("s") + d.Render("Cycle sort order") + "\n")
-	sb.WriteString(k.Render("c") + d.Render("Toggle show completed") + "\n")
-	sb.WriteString(k.Render("r") + d.Render("Refresh current view") + "\n")
-	sb.WriteString(k.Render("/") + d.Render("Filter / search") + "\n")
-
-	sb.WriteString("\n")
-	sb.WriteString(h.Render("General"))
-	sb.WriteString("\n")
-	sb.WriteString(k.Render("?") + d.Render("Toggle this help") + "\n")
-	sb.WriteString(k.Render("Esc") + d.Render("Close dialog / popup") + "\n")
-	sb.WriteString(k.Render("q / Ctrl-C") + d.Render("Quit") + "\n")
-
+	first := true
+	for _, scope := range keybind.Scopes() {
+		var lines []string
+		for _, a := range keybind.Registry() {
+			if a.Scope != scope {
+				continue
+			}
+			aliases := m.keys.Aliases(scope, a.Name)
+			if len(aliases) == 0 {
+				continue
+			}
+			lines = append(lines, k.Render(keybind.ShortKeys(aliases))+d.Render(a.Help)+"\n")
+		}
+		if len(lines) == 0 {
+			continue
+		}
+		if !first {
+			sb.WriteString("\n")
+		}
+		first = false
+		sb.WriteString(h.Render(keybind.ScopeTitle(scope)))
+		sb.WriteString("\n")
+		for _, line := range lines {
+			sb.WriteString(fmt.Sprintf("  %s", line))
+		}
+	}
 	return sb.String()
 }

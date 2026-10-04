@@ -9,6 +9,7 @@ type ListsLoadedMsg struct {
 
 type RemindersLoadedMsg struct {
 	Reminders []reminders.Reminder
+	ListID    string
 	Err       error
 }
 

@@ -6,9 +6,11 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/oronbz/nag/internal/keybind"
 	"github.com/oronbz/nag/internal/reminders"
 	"github.com/oronbz/nag/internal/ui/commands"
 	"github.com/oronbz/nag/internal/ui/components/dialog"
@@ -28,7 +30,9 @@ const (
 )
 
 type Model struct {
-	client *reminders.Client
+	client      *reminders.Client
+	keys        keybind.Map
+	aceAlphabet string
 
 	listPanel     listpanel.Model
 	reminderPanel reminderpanel.Model
@@ -48,9 +52,16 @@ type Model struct {
 	width         int
 	height        int
 	ready         bool
+
+	// displayedListID records the list whose reminders are actually shown;
+	// loadingReminders tracks an in-flight reminder fetch so ace targets
+	// never snapshot data that is about to be replaced.
+	displayedListID  string
+	loadingReminders bool
+	ace              aceState
 }
 
-func NewModel(client *reminders.Client) Model {
+func NewModel(client *reminders.Client, keys keybind.Map, aceAlphabet string) Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = styles.SpinnerStyle
@@ -58,8 +69,10 @@ func NewModel(client *reminders.Client) Model {
 	lp := listpanel.New(30, 20)
 	lp.SetFocused(true)
 
-	return Model{
+	m := Model{
 		client:        client,
+		keys:          keys,
+		aceAlphabet:   aceAlphabet,
 		listPanel:     lp,
 		reminderPanel: reminderpanel.New(50, 20),
 		statusBar:     statusbar.New(),
@@ -70,6 +83,14 @@ func NewModel(client *reminders.Client) Model {
 		spinner:       s,
 		focusedPanel:  PanelLists,
 	}
+	m.listPanel.SetKeys(keys)
+	m.reminderPanel.SetKeys(keys)
+	m.statusBar.SetKeys(keys)
+	m.helpOverlay.SetKeys(keys)
+	m.createDlg.SetKeys(keys)
+	m.createListDlg.SetKeys(keys)
+	m.confirmDlg.SetKeys(keys)
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -92,6 +113,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.WindowSizeMsg:
+		m.aceExit()
 		m.width = msg.Width
 		m.height = msg.Height
 		m.ready = true
@@ -99,6 +121,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMsg:
+		m.aceExit()
 		if m.createDlg.Visible() || m.createListDlg.Visible() || m.confirmDlg.Visible() || m.helpOverlay.Visible() {
 			break
 		}
@@ -131,6 +154,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case delayedRefreshMsg:
+		m.aceExit()
 		return m, m.fetchSelectedReminders()
 
 	case openFailedMsg:
@@ -142,7 +166,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		cmds = append(cmds, cmd)
 
+	case list.FilterMatchesMsg:
+		// A filter result changes the displayed rows: ace mode ends.
+		m.aceExit()
+
 	case messages.ListsLoadedMsg:
+		m.aceExit()
 		m.statusBar.ClearLoading()
 		if msg.Err != nil {
 			m.statusBar.SetError(msg.Err.Error())
@@ -154,12 +183,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case messages.RemindersLoadedMsg:
+		// Ace mode ends whenever reminder data may change.
+		m.aceExit()
+		// Ignore results for a list other than the selected one so a slow
+		// older fetch cannot clobber the display, loading or focus state.
+		if m.selectedList == nil || msg.ListID != m.selectedList.ID {
+			return m, nil
+		}
+		m.loadingReminders = false
 		m.statusBar.ClearLoading()
 		if msg.Err != nil {
 			m.statusBar.SetError(msg.Err.Error())
 			return m, nil
 		}
 		m.statusBar.ClearError()
+		m.displayedListID = msg.ListID
 		if m.sortMode != reminders.SortDefault {
 			reminders.ApplySort(msg.Reminders, m.sortMode)
 		}
@@ -218,6 +256,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case messages.TickMsg:
+		m.aceExit()
 		batch := []tea.Cmd{commands.AutoRefreshTick(), commands.FetchLists(m.client)}
 		if cmd := m.fetchSelectedReminders(); cmd != nil {
 			batch = append(batch, cmd)
@@ -333,11 +372,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if m.helpOverlay.Visible() {
-		if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
-			if key.Matches(keyMsg, Keys.Help) || key.Matches(keyMsg, Keys.Escape) || key.Matches(keyMsg, Keys.Quit) {
-				m.helpOverlay.Toggle()
-				return m, nil
-			}
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok && key.Matches(keyMsg, m.keys.Bind("help", "close")) {
+			m.helpOverlay.Toggle()
+			return m, nil
 		}
 		var cmd tea.Cmd
 		m.helpOverlay, cmd = m.helpOverlay.Update(msg)
@@ -347,34 +384,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Global keys (skip when filtering)
 	filtering := m.listPanel.Filtering() || m.reminderPanel.Filtering()
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && !filtering {
+		// Active ace mode captures keys before every other shortcut.
+		if m.ace.active {
+			return m, m.aceHandleKey(keyMsg)
+		}
 		switch {
-		case key.Matches(keyMsg, Keys.Quit):
+		case key.Matches(keyMsg, m.keys.Bind("global", "quit")):
 			return m, tea.Quit
-		case key.Matches(keyMsg, Keys.Help):
+		case key.Matches(keyMsg, m.keys.Bind("global", "ace_jump")):
+			m.aceStart()
+			return m, nil
+		case key.Matches(keyMsg, m.keys.Bind("global", "help")):
 			m.helpOverlay.Toggle()
 			return m, nil
-		case key.Matches(keyMsg, Keys.Tab):
+		case key.Matches(keyMsg, m.keys.Bind("global", "next_panel")):
 			m.cycleFocus(1)
 			return m, nil
-		case key.Matches(keyMsg, Keys.ShiftTab):
+		case key.Matches(keyMsg, m.keys.Bind("global", "previous_panel")):
 			m.cycleFocus(-1)
 			return m, nil
-		case key.Matches(keyMsg, Keys.Enter):
+		case key.Matches(keyMsg, m.keys.Bind("global", "select")):
 			return m, m.handleEnter()
-		case key.Matches(keyMsg, Keys.ToggleComplete):
+		case key.Matches(keyMsg, m.keys.Bind("global", "toggle_complete")):
 			return m, m.handleToggleComplete()
-		case key.Matches(keyMsg, Keys.NewReminder):
+		case key.Matches(keyMsg, m.keys.Bind("global", "new")):
 			m.handleNew()
 			return m, nil
-		case key.Matches(keyMsg, Keys.Edit):
+		case key.Matches(keyMsg, m.keys.Bind("global", "edit")):
 			m.handleEdit()
 			return m, nil
-		case key.Matches(keyMsg, Keys.Delete):
+		case key.Matches(keyMsg, m.keys.Bind("global", "delete")):
 			m.handleDelete()
 			return m, nil
-		case key.Matches(keyMsg, Keys.OpenInApp):
+		case key.Matches(keyMsg, m.keys.Bind("global", "open_in_app")):
 			return m, m.handleOpenInApp()
-		case key.Matches(keyMsg, Keys.Sort):
+		case key.Matches(keyMsg, m.keys.Bind("global", "sort")):
 			m.sortMode = m.sortMode.Next()
 			m.statusBar.SetSortLabel(m.sortMode.Label())
 			items := m.reminderPanel.Reminders()
@@ -382,7 +426,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reminderPanel.SetReminders(items)
 			m.statusBar.SetInfo("Sort: " + m.sortMode.Label())
 			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearInfoMsg{} })
-		case key.Matches(keyMsg, Keys.ShowCompleted):
+		case key.Matches(keyMsg, m.keys.Bind("global", "show_completed")):
 			m.showCompleted = !m.showCompleted
 			if m.showCompleted {
 				m.statusBar.SetInfo("Showing completed")
@@ -390,7 +434,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusBar.SetInfo("Hiding completed")
 			}
 			return m, tea.Batch(m.fetchSelectedReminders(), tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearInfoMsg{} }))
-		case key.Matches(keyMsg, Keys.Refresh):
+		case key.Matches(keyMsg, m.keys.Bind("global", "refresh")):
 			return m, m.handleRefresh()
 		}
 	}
@@ -521,15 +565,17 @@ func (m *Model) handleEnter() tea.Cmd {
 
 func (m *Model) fetchSelectedReminders() tea.Cmd {
 	if m.selectedList == nil {
+		m.loadingReminders = false
 		return nil
 	}
+	m.loadingReminders = true
 	switch m.selectedList.ID {
 	case reminders.SmartListToday:
 		return commands.FetchTodayReminders(m.client, m.showCompleted)
 	case reminders.SmartListScheduled:
 		return commands.FetchScheduledReminders(m.client, m.showCompleted)
 	default:
-		return commands.FetchReminders(m.client, m.selectedList.Title, m.showCompleted)
+		return commands.FetchReminders(m.client, m.selectedList.ID, m.selectedList.Title, m.showCompleted)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/BRO3886/go-eventkit"
 	ekreminders "github.com/BRO3886/go-eventkit/reminders"
 )
 
@@ -121,6 +122,7 @@ func (c *Client) CreateReminder(input CreateReminderInput) (*Reminder, error) {
 	if input.DueDate != nil {
 		ekInput.DueDate = input.DueDate
 	}
+	ekInput.RecurrenceRules = input.RecurrenceRules
 	result, err := c.ek.CreateReminder(ekInput)
 	if err != nil {
 		return nil, err
@@ -145,6 +147,11 @@ func (c *Client) UpdateReminder(id string, input UpdateReminderInput) (*Reminder
 	if input.Priority != nil {
 		p := ekreminders.Priority(*input.Priority)
 		ekInput.Priority = &p
+	}
+	if input.RecurrenceRules != nil {
+		rules := make([]eventkit.RecurrenceRule, len(*input.RecurrenceRules))
+		copy(rules, *input.RecurrenceRules)
+		ekInput.RecurrenceRules = &rules
 	}
 	result, err := c.ek.UpdateReminder(id, ekInput)
 	if err != nil {
@@ -186,15 +193,17 @@ func convertReminders(items []ekreminders.Reminder) []Reminder {
 
 func convertReminder(r ekreminders.Reminder) Reminder {
 	return Reminder{
-		ID:             r.ID,
-		Title:          r.Title,
-		Notes:          r.Notes,
-		ListID:         r.ListID,
-		DueDate:        r.DueDate,
-		Completed:      r.Completed,
-		CompletionDate: r.CompletionDate,
-		Priority:       int(r.Priority),
-		CreatedAt:      r.CreatedAt,
-		ModifiedAt:     r.ModifiedAt,
+		ID:              r.ID,
+		Title:           r.Title,
+		Notes:           r.Notes,
+		ListID:          r.ListID,
+		DueDate:         r.DueDate,
+		Completed:       r.Completed,
+		CompletionDate:  r.CompletionDate,
+		Priority:        int(r.Priority),
+		CreatedAt:       r.CreatedAt,
+		ModifiedAt:      r.ModifiedAt,
+		Recurring:       r.Recurring,
+		RecurrenceRules: append([]eventkit.RecurrenceRule(nil), r.RecurrenceRules...),
 	}
 }

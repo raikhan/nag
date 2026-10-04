@@ -1,6 +1,10 @@
 package reminders
 
-import "time"
+import (
+	"time"
+
+	"github.com/BRO3886/go-eventkit"
+)
 
 const (
 	PriorityNone   = 0
@@ -51,30 +55,34 @@ type ReminderList struct {
 }
 
 type Reminder struct {
-	ID             string
-	Title          string
-	Notes          string
-	ListID         string
-	DueDate        *time.Time
-	Completed      bool
-	CompletionDate *time.Time
-	Priority       int
-	CreatedAt      *time.Time
-	ModifiedAt     *time.Time
+	ID              string
+	Title           string
+	Notes           string
+	ListID          string
+	DueDate         *time.Time
+	Completed       bool
+	CompletionDate  *time.Time
+	Priority        int
+	CreatedAt       *time.Time
+	ModifiedAt      *time.Time
+	Recurring       bool
+	RecurrenceRules []eventkit.RecurrenceRule
 }
 
 type CreateReminderInput struct {
-	Title    string
-	ListName string
-	DueDate  *time.Time
-	Priority int
-	Notes    string
+	Title           string
+	ListName        string
+	DueDate         *time.Time
+	Priority        int
+	Notes           string
+	RecurrenceRules []eventkit.RecurrenceRule
 }
 
 type UpdateReminderInput struct {
-	Title        *string
-	Notes        *string
-	DueDate      *time.Time
-	ClearDueDate bool
-	Priority     *int
+	Title           *string
+	Notes           *string
+	DueDate         *time.Time
+	ClearDueDate    bool
+	Priority        *int
+	RecurrenceRules *[]eventkit.RecurrenceRule
 }

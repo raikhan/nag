@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Configurable keybindings via TOML (`nag config init` writes `~/.config/nag/config.toml` or `$XDG_CONFIG_HOME/nag/config.toml`); all scopes (global, list, filter, dialog, choice fields, selector, calendar, confirm, help, text input, ace) are independently remappable and `nag help` renders the configured bindings
+- Org-mode style due-date entry (`today`, `tue`, `+2d`, `+7w`, `eow`, `eom`, `sep 15`, ISO weeks, `H:MM` times) with live autocomplete and a synchronized keyboard calendar while the due field is focused
+- Fuzzy priority selection and repeat presets through a shared fuzzy selector popup
+- Native Apple Reminders recurrence: round-trip display of existing rules plus editing of daily/weekly/monthly/yearly schedules (intervals, weekday and day-of-month patterns, end date/occurrence count) via a Custom repeat editor; hourly is not available through the public EventKit API
+- `z` ace jump: label and jump to any visible sidebar list or visible reminder row of the selected list using configurable alphabet labels
+
 ### Fixed
+- Sidebar separator can no longer be selected by navigation, paging or wheel scrolling
+- Filtered lists no longer flash empty while a background refresh re-applies items; an applied filter now survives refreshes
 - Separator line between list sections spilled over onto a second line
 
 ### Changed

@@ -1,8 +1,11 @@
 package reminderpanel
 
 import (
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"github.com/oronbz/nag/internal/keybind"
 	"github.com/oronbz/nag/internal/reminders"
 	"github.com/oronbz/nag/internal/ui/styles"
 )
@@ -10,6 +13,8 @@ import (
 type Model struct {
 	list    list.Model
 	focused bool
+	keys    keybind.Map
+	ace     *aceState
 }
 
 func New(width, height int) Model {
@@ -21,9 +26,62 @@ func New(width, height int) Model {
 	l.SetShowHelp(false)
 	l.DisableQuitKeybindings()
 
-	m := Model{list: l}
+	m := Model{list: l, keys: keybind.Map{}, ace: delegate.ace}
 	m.SetDarkBackground(true)
 	return m
+}
+
+// SetKeys projects the configured list/filter/textinput bindings into the
+// underlying Bubbles list, paginator and filter input keymaps. Disabled
+// actions receive empty bindings so they never match.
+func (m *Model) SetKeys(keys keybind.Map) {
+	m.keys = keys
+	km := &m.list.KeyMap
+	km.CursorUp = key.NewBinding(key.WithKeys(keys.Aliases("list", "up")...), key.WithHelp(keybind.ShortKeys(keys.Aliases("list", "up")), "up"))
+	km.CursorDown = key.NewBinding(key.WithKeys(keys.Aliases("list", "down")...), key.WithHelp(keybind.ShortKeys(keys.Aliases("list", "down")), "down"))
+	km.GoToStart = key.NewBinding(key.WithKeys(keys.Aliases("list", "first")...), key.WithHelp(keybind.ShortKeys(keys.Aliases("list", "first")), "first"))
+	km.GoToEnd = key.NewBinding(key.WithKeys(keys.Aliases("list", "last")...), key.WithHelp(keybind.ShortKeys(keys.Aliases("list", "last")), "last"))
+	km.PrevPage = key.NewBinding(key.WithKeys(keys.Aliases("list", "previous_page")...), key.WithHelp(keybind.ShortKeys(keys.Aliases("list", "previous_page")), "prev page"))
+	km.NextPage = key.NewBinding(key.WithKeys(keys.Aliases("list", "next_page")...), key.WithHelp(keybind.ShortKeys(keys.Aliases("list", "next_page")), "next page"))
+	km.Filter = key.NewBinding(key.WithKeys(keys.Aliases("list", "filter")...), key.WithHelp(keybind.ShortKeys(keys.Aliases("list", "filter")), "filter"))
+	km.ClearFilter = key.NewBinding(key.WithKeys(keys.Aliases("list", "clear_filter")...), key.WithHelp(keybind.ShortKeys(keys.Aliases("list", "clear_filter")), "clear filter"))
+	km.AcceptWhileFiltering = key.NewBinding(key.WithKeys(keys.Aliases("filter", "accept")...), key.WithHelp(keybind.ShortKeys(keys.Aliases("filter", "accept")), "apply filter"))
+	km.CancelWhileFiltering = key.NewBinding(key.WithKeys(keys.Aliases("filter", "cancel")...), key.WithHelp(keybind.ShortKeys(keys.Aliases("filter", "cancel")), "cancel"))
+
+	// Shortcuts not projected from the registry stay disabled: quit and
+	// full-help belong to the root.
+	km.Quit = key.NewBinding()
+	km.ForceQuit = key.NewBinding()
+	km.ShowFullHelp = key.NewBinding()
+	km.CloseFullHelp = key.NewBinding()
+
+	// Project page arrays to the paginator too.
+	pk := &m.list.Paginator.KeyMap
+	pk.PrevPage = key.NewBinding(key.WithKeys(keys.Aliases("list", "previous_page")...))
+	pk.NextPage = key.NewBinding(key.WithKeys(keys.Aliases("list", "next_page")...))
+
+	// Project textinput keys into the filter input.
+	fi := &m.list.FilterInput.KeyMap
+	projectTextinputKeys(fi, keys)
+}
+
+func projectTextinputKeys(km *textinput.KeyMap, keys keybind.Map) {
+	km.CharacterForward = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "character_forward")...))
+	km.CharacterBackward = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "character_backward")...))
+	km.WordForward = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "word_forward")...))
+	km.WordBackward = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "word_backward")...))
+	km.DeleteWordBackward = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "delete_word_backward")...))
+	km.DeleteWordForward = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "delete_word_forward")...))
+	km.DeleteAfterCursor = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "delete_after_cursor")...))
+	km.DeleteBeforeCursor = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "delete_before_cursor")...))
+	km.DeleteCharacterBackward = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "delete_character_backward")...))
+	km.DeleteCharacterForward = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "delete_character_forward")...))
+	km.LineStart = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "line_start")...))
+	km.LineEnd = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "line_end")...))
+	km.Paste = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "paste")...))
+	km.AcceptSuggestion = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "accept_suggestion")...))
+	km.NextSuggestion = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "next_suggestion")...))
+	km.PrevSuggestion = key.NewBinding(key.WithKeys(keys.Aliases("textinput", "previous_suggestion")...))
 }
 
 // SetDarkBackground reapplies the list's styles for a dark or light
@@ -54,7 +112,14 @@ func (m *Model) SetReminders(items []reminders.Reminder) {
 	for i, r := range items {
 		listItems[i] = Item{Reminder: r}
 	}
-	m.list.SetItems(listItems)
+	// Re-applying an active filter synchronously keeps the filtered view
+	// intact across refreshes instead of flashing empty until the async
+	// filter command lands.
+	if cmd := m.list.SetItems(listItems); cmd != nil {
+		if msg := cmd(); msg != nil {
+			m.list, _ = m.list.Update(msg)
+		}
+	}
 	if prevIndex > 0 && prevIndex < len(listItems) {
 		m.list.Select(prevIndex)
 	}
@@ -94,6 +159,55 @@ func (m Model) SelectedReminder() (reminders.Reminder, bool) {
 
 func (m Model) Filtering() bool {
 	return m.list.FilterState() == list.Filtering
+}
+
+// SetAceLabels installs the active ace-jump labels (keyed by stable
+// reminder ID) for the delegate to render. An empty or nil map clears all
+// labels.
+func (m *Model) SetAceLabels(labels map[string]string) {
+	if len(labels) == 0 {
+		m.ace.labels = nil
+		m.ace.prefix = ""
+		return
+	}
+	m.ace.labels = make(map[string]string, len(labels))
+	for id, label := range labels {
+		m.ace.labels[id] = label
+	}
+}
+
+// SetAcePrefix updates the typed ace prefix so nonmatching labels dim.
+func (m *Model) SetAcePrefix(prefix string) {
+	m.ace.prefix = prefix
+}
+
+// VisibleIDs returns the stable IDs of the rows currently visible on the
+// active page. With an active filter it enumerates the filtered items.
+func (m Model) VisibleIDs() []string {
+	items := m.list.VisibleItems()
+	start, end := m.list.Paginator.GetSliceBounds(len(items))
+	ids := make([]string, 0, end-start)
+	for i := start; i < end && i < len(items); i++ {
+		if it, ok := items[i].(Item); ok {
+			ids = append(ids, it.Reminder.ID)
+		}
+	}
+	return ids
+}
+
+// SelectID moves the selection to the item with the given stable ID among
+// the rows visible on the active page (the ace-eligible rows) and reports
+// whether it was found.
+func (m *Model) SelectID(id string) bool {
+	items := m.list.VisibleItems()
+	start, end := m.list.Paginator.GetSliceBounds(len(items))
+	for i := start; i < end && i < len(items); i++ {
+		if it, ok := items[i].(Item); ok && it.Reminder.ID == id {
+			m.list.Select(i)
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {

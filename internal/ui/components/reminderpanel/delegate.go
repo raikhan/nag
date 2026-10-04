@@ -21,9 +21,17 @@ func (i Item) Title() string       { return i.Reminder.Title }
 func (i Item) Description() string { return "" }
 func (i Item) FilterValue() string { return i.Reminder.Title + " " + i.Reminder.Notes }
 
+// aceState holds the current ace-jump overlay: a label per stable reminder
+// ID and the typed prefix used to dim nonmatching labels.
+type aceState struct {
+	labels map[string]string
+	prefix string
+}
+
 type Delegate struct {
 	selectedStyle lipgloss.Style
 	normalStyle   lipgloss.Style
+	ace           *aceState
 }
 
 func NewDelegate() Delegate {
@@ -34,6 +42,7 @@ func NewDelegate() Delegate {
 			PaddingLeft(1),
 		normalStyle: lipgloss.NewStyle().
 			PaddingLeft(2),
+		ace: &aceState{},
 	}
 }
 
@@ -49,6 +58,20 @@ func (d Delegate) Render(w io.Writer, m list.Model, index int, listItem list.Ite
 
 	r := item.Reminder
 
+	// Ace-jump label, if any. It consumes width (before MaxWidth
+	// truncation), never an extra row, and dims when it no longer
+	// matches the typed prefix.
+	var label string
+	if d.ace != nil && d.ace.labels != nil {
+		if lab, ok := d.ace.labels[r.ID]; ok {
+			if d.ace.prefix != "" && !strings.HasPrefix(lab, d.ace.prefix) {
+				label = styles.ReminderDimStyle.Render("["+lab+"]") + " "
+			} else {
+				label = lipgloss.NewStyle().Foreground(styles.Teal).Bold(true).Render("["+lab+"]") + " "
+			}
+		}
+	}
+
 	// Line 1: checkbox + title + priority
 	checkbox := styles.CheckboxIcon(r.Completed)
 	var title string
@@ -58,7 +81,7 @@ func (d Delegate) Render(w io.Writer, m list.Model, index int, listItem list.Ite
 		title = styles.ReminderTitleStyle.Render(r.Title)
 	}
 	priority := styles.PriorityIcon(r.Priority)
-	line1 := fmt.Sprintf("%s %s%s", checkbox, title, priority)
+	line1 := fmt.Sprintf("%s %s%s%s", checkbox, label, title, priority)
 
 	// Line 2: due date + notes preview
 	var parts []string
