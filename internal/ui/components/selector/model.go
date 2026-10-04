@@ -1,6 +1,8 @@
 package selector
 
 import (
+	"fmt"
+	"io"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -33,11 +35,10 @@ type item struct {
 }
 
 func (i item) Title() string {
-	marker := "☐ "
 	if i.selected {
-		marker = "☑ "
+		return "☑ " + i.opt.Label
 	}
-	return marker + i.opt.Label
+	return i.opt.Label
 }
 
 func (i item) Description() string { return i.opt.Description }
@@ -74,6 +75,28 @@ type Model struct {
 	height    int
 }
 
+// lineDelegate renders each option as a single line; the highlighted row is
+// the selection indicator for single-select choosers.
+type lineDelegate struct{}
+
+func (d lineDelegate) Height() int  { return 1 }
+func (d lineDelegate) Spacing() int { return 0 }
+func (d lineDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd {
+	return nil
+}
+
+func (d lineDelegate) Render(w io.Writer, m list.Model, index int, listItem list.Item) {
+	it, ok := listItem.(item)
+	if !ok {
+		return
+	}
+	style := lipgloss.NewStyle()
+	if index == m.Index() {
+		style = style.Foreground(styles.Teal).Bold(true)
+	}
+	fmt.Fprint(w, style.Render(it.Title()))
+}
+
 // New builds a chooser with the given compiled bindings.
 func New(keys keybind.Map) Model {
 	ti := textinput.New()
@@ -82,7 +105,7 @@ func New(keys keybind.Map) Model {
 	ti.CharLimit = 64
 	ti.Focus()
 
-	l := list.New(nil, list.NewDefaultDelegate(), 40, 12)
+	l := list.New(nil, lineDelegate{}, 40, 12)
 	l.SetShowTitle(false)
 	l.SetShowFilter(false)
 	l.SetShowStatusBar(false)
@@ -117,7 +140,7 @@ func (m *Model) Open(options []Option, selectedIDs []string, multi bool) {
 
 	items := make([]list.Item, len(m.options))
 	for i, o := range m.options {
-		items[i] = item{opt: o, selected: m.committed[o.ID]}
+		items[i] = item{opt: o, selected: m.multi && m.committed[o.ID]}
 	}
 	m.list.SetItems(items)
 	m.list.SetFilterText("")
@@ -256,7 +279,7 @@ func (m *Model) selectedIDs() []string {
 func (m *Model) refreshSelection() {
 	items := make([]list.Item, len(m.options))
 	for i, o := range m.options {
-		items[i] = item{opt: o, selected: m.committed[o.ID]}
+		items[i] = item{opt: o, selected: m.multi && m.committed[o.ID]}
 	}
 	m.list.SetItems(items)
 	m.applyQuery()

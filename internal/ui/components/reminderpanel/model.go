@@ -107,6 +107,10 @@ func (m *Model) SetTitle(title string) {
 }
 
 func (m *Model) SetReminders(items []reminders.Reminder) {
+	prevID := ""
+	if r, ok := m.SelectedReminder(); ok {
+		prevID = r.ID
+	}
 	prevIndex := m.list.Index()
 	listItems := make([]list.Item, len(items))
 	for i, r := range items {
@@ -119,6 +123,11 @@ func (m *Model) SetReminders(items []reminders.Reminder) {
 		if msg := cmd(); msg != nil {
 			m.list, _ = m.list.Update(msg)
 		}
+	}
+	// Keep the selection on the same reminder across refreshes so external
+	// deletions above the cursor don't shift the selection.
+	if prevID != "" && m.SelectID(prevID) {
+		return
 	}
 	if prevIndex > 0 && prevIndex < len(listItems) {
 		m.list.Select(prevIndex)

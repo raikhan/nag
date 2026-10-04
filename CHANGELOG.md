@@ -18,12 +18,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Calendar grid aligned every one of its 42 cells with the weekday columns; adjacent-month days render dimmed instead of leaving blank leading cells
+- The create/edit form's vertical divider stays at the horizontal middle regardless of content length; long values truncate on the left pane and wrap in the right pane
+- `Tab`/`Shift-Tab` no longer interrupt an open field editor or leak into its widget
+- The Date field shows the resolved canonical date instead of the fuzzy term (`tom` commits and displays as `2026-10-05`), and while the date field is focused `Ctrl-PgUp`/`Ctrl-PgDn` move a month with day clamping (Oct 31 → Nov 30) and `Ctrl-D` clears the field
+- Sync refreshes keep the reminder selection on the same reminder even when external deletions shift the rows above it
 ### Fixed
 - Sidebar separator can no longer be selected by navigation, paging or wheel scrolling
 - Filtered lists no longer flash empty while a background refresh re-applies items; an applied filter now survives refreshes
 - Separator line between list sections spilled over onto a second line
 
 ### Changed
+- Reminder form Notes is a multiline editor: `Ctrl-J` inserts a newline, `Enter` finishes the field, and `Ctrl-O` opens the value in `$EDITOR` (`VISUAL`/`EDITOR`/`vi`); committed notes keep their newlines
+- The fuzzy priority/recurrence choosers render one line per option without checkbox markers; the cursor highlight indicates the selection, and multi-select toggles keep the `☑` marker
+- Server-side sync polls Reminders every 2 seconds (was 10); an unchanged poll no longer rewrites the reminder panel
+- The reminder panel follows sidebar navigation: moving the list selection (`j`/`k`, arrows, paging, mouse wheel) loads that list's reminders without pressing `Enter`; `Enter` still moves focus to the reminders panel
 - Due-date entry is date-only: combined date/time text and hour offsets (`+2h`) are rejected with a pointer to the Time field
 - `Tab` no longer accepts a date completion; completion moved to `Ctrl-Y` (`keys.calendar.complete`) so Tab always navigates fields
 - Upgraded UI stack to Bubble Tea v2 (`charm.land/bubbletea/v2` v2.0.10), Bubbles v2 (v2.2.1), and Lip Gloss v2 (v2.0.6); requires Go 1.26+

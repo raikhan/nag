@@ -1,6 +1,7 @@
 package reminders
 
 import (
+	"reflect"
 	"sort"
 	"time"
 
@@ -74,6 +75,31 @@ func (c *Client) ScheduledReminders(showCompleted bool) ([]Reminder, error) {
 		return a.DueDate != nil
 	})
 	return result, nil
+}
+
+// RemindersEqual reports whether two reminder slices hold the same items
+// with identical user-visible state (order included).
+func RemindersEqual(a, b []Reminder) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		if x.ID != y.ID || x.Title != y.Title || x.Notes != y.Notes ||
+			x.Completed != y.Completed || x.Priority != y.Priority {
+			return false
+		}
+		if (x.DueDate == nil) != (y.DueDate == nil) {
+			return false
+		}
+		if x.DueDate != nil && !x.DueDate.Equal(*y.DueDate) {
+			return false
+		}
+		if !reflect.DeepEqual(x.RecurrenceRules, y.RecurrenceRules) {
+			return false
+		}
+	}
+	return true
 }
 
 // sortReminders preserves original order but moves completed items after incomplete.

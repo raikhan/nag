@@ -2,15 +2,19 @@ package dialog
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/BRO3886/go-eventkit"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/oronbz/nag/internal/dateentry"
 	"github.com/oronbz/nag/internal/keybind"
@@ -76,7 +80,7 @@ const (
 type CreateModel struct {
 	keys        keybind.Map
 	titleInput  textinput.Model
-	notesInput  textinput.Model
+	notesInput  textarea.Model
 	timeInput   textinput.Model
 	picker      datepickerModel
 	priority    int
@@ -134,12 +138,12 @@ func NewCreate() CreateModel {
 	ti.Prompt = "Title:    "
 	applyInputStyles(&ti)
 
-	ni := textinput.New()
+	ni := textarea.New()
 	ni.Placeholder = "Optional notes"
 	ni.CharLimit = 1024
+	ni.Prompt = ""
 	ni.SetWidth(58)
-	ni.Prompt = "Notes:    "
-	applyInputStyles(&ni)
+	ni.SetHeight(3)
 
 	tmi := textinput.New()
 	tmi.Placeholder = "e.g. 6pm, 14:13"
@@ -166,7 +170,9 @@ func (m *CreateModel) SetKeys(keys keybind.Map) {
 	m.recurrenceE = NewRecurrence(keys)
 	m.picker = datePickerNew(time.Now(), midnightOf(time.Now()), keys)
 	projectTextInputKeys(&m.titleInput, keys, "field")
-	projectTextInputKeys(&m.notesInput, keys, "field")
+	km := textarea.DefaultKeyMap()
+	km.InsertNewline = key.NewBinding(key.WithKeys(keys.Aliases("field", "notes_newline")...))
+	m.notesInput.KeyMap = km
 	projectTextInputKeys(&m.timeInput, keys, "field")
 }
 
@@ -337,6 +343,49 @@ func (m *CreateModel) closeField() {
 	m.blurAll()
 }
 
+// notesEditorDoneMsg carries the result of an external $EDITOR session on
+// the Notes field.
+type notesEditorDoneMsg struct {
+	content string
+	err     error
+}
+
+// openNotesEditor suspends the TUI and edits the Notes value in $EDITOR
+// (falling back to VISUAL/vi). The completion message reaches update() as
+// notesEditorDoneMsg.
+func (m *CreateModel) openNotesEditor() tea.Cmd {
+	editor := os.Getenv("VISUAL")
+	if editor == "" {
+		editor = os.Getenv("EDITOR")
+	}
+	if editor == "" {
+		editor = "vi"
+	}
+	f, err := os.CreateTemp("", "nag-notes-*.txt")
+	if err != nil {
+		m.errText = err.Error()
+		return nil
+	}
+	path := f.Name()
+	if _, err := f.WriteString(m.notesInput.Value()); err != nil {
+		f.Close()
+		os.Remove(path)
+		m.errText = err.Error()
+		return nil
+	}
+	f.Close()
+	c := exec.Command(editor, path)
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		content, rerr := os.ReadFile(path)
+		os.Remove(path)
+		if rerr != nil {
+			return notesEditorDoneMsg{err: rerr}
+		}
+		return notesEditorDoneMsg{content: strings.TrimSuffix(string(content), "\n"), err: err}
+	})
+}
+
 // cancelField restores the opening value and returns to browsing.
 func (m *CreateModel) cancelField() {
 	switch m.active {
@@ -374,11 +423,13 @@ func (m *CreateModel) commitField(f formField) bool {
 			m.errText = ""
 			return true
 		}
-		if _, err := dateentry.Parse(raw, m.now, m.base); err != nil {
+		resolved, err := dateentry.Parse(raw, m.now, m.base)
+		if err != nil {
 			m.errText = err.Error()
 			return false
 		}
-		m.committedDate = raw
+		m.committedDate = resolved.Format("2006-01-02")
+		m.picker.SetValue(m.committedDate)
 		m.errText = ""
 		return true
 	case fieldTime:
@@ -610,10 +661,13 @@ func (m CreateModel) summaryValue(f formField) string {
 	case fieldTitle:
 		return strings.TrimSpace(m.titleInput.Value())
 	case fieldNotes:
-		return strings.TrimSpace(m.notesInput.Value())
+		return strings.TrimSpace(strings.ReplaceAll(m.notesInput.Value(), "\n", " "))
 	case fieldDate:
 		if m.mode == formEditing && m.active == fieldDate {
 			if v := strings.TrimSpace(m.picker.Value()); v != "" {
+				if resolved, err := dateentry.Parse(v, m.now, m.base); err == nil {
+					return resolved.Format("2006-01-02")
+				}
 				return v
 			}
 			return "None"
@@ -645,10 +699,11 @@ func (m CreateModel) summaryValue(f formField) string {
 	}
 }
 
-// summaryLines renders the six left-pane rows.
-func (m CreateModel) summaryLines() []string {
-	selectedStyle := lipgloss.NewStyle().Foreground(styles.Teal).Bold(true)
-	normalStyle := lipgloss.NewStyle()
+// summaryLines renders the six left-pane rows, each padded to exactly maxW
+// columns so the divider column stays fixed; long values are truncated.
+func (m CreateModel) summaryLines(maxW int) []string {
+	selectedStyle := lipgloss.NewStyle().Foreground(styles.Teal).Bold(true).Width(maxW)
+	normalStyle := lipgloss.NewStyle().Width(maxW)
 	lines := make([]string, 0, formFieldCount)
 	for f := formField(0); f < formFieldCount; f++ {
 		marker := "  "
@@ -658,6 +713,7 @@ func (m CreateModel) summaryLines() []string {
 			style = selectedStyle
 		}
 		line := marker + m.jumpHint(m.jumpAction(f)) + fmt.Sprintf("%-11s", m.fieldLabel(f)) + m.summaryValue(f)
+		line = ansi.Truncate(line, maxW, "…")
 		lines = append(lines, style.Render(line))
 	}
 	return lines
@@ -724,6 +780,14 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 		m.purpose = chooserNone
 		m.selector.Close()
 		m.finishChoiceOwner()
+		return m, nil
+	case notesEditorDoneMsg:
+		if msg.err != nil {
+			m.errText = "Editor failed: " + msg.err.Error()
+			return m, nil
+		}
+		m.errText = ""
+		m.notesInput.SetValue(msg.content)
 		return m, nil
 	}
 
@@ -799,17 +863,14 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 		case key.Matches(keyMsg, m.keys.Bind("field", "cancel")):
 			m.cancelField()
 			return m, nil
-		case key.Matches(keyMsg, m.keys.Bind("field", "next_field")):
-			if m.commitField(m.active) {
-				m.closeField()
-				m.selected = (m.selected + 1) % formFieldCount
+		case key.Matches(keyMsg, m.keys.Bind("field", "external_editor")) && m.active == fieldNotes:
+			if cmd := m.openNotesEditor(); cmd != nil {
+				return m, cmd
 			}
 			return m, nil
-		case key.Matches(keyMsg, m.keys.Bind("field", "previous_field")):
-			if m.commitField(m.active) {
-				m.closeField()
-				m.selected = (m.selected - 1 + formFieldCount) % formFieldCount
-			}
+		case keyMsg.Code == tea.KeyTab:
+			// Tab/Shift-Tab never leave an open field editor; consume them
+			// so no widget treats them as input.
 			return m, nil
 		}
 	}
@@ -1015,15 +1076,15 @@ func (m *CreateModel) rebuildPane() {
 		return
 	}
 
-	leftLines := m.summaryLines()
 	var right string
 	focus := 0
 	var leftBlock string
 	if wide {
-		leftW := min(32, max(24, contentW/3))
+		leftW := (contentW - 3) / 2
 		rightW := contentW - leftW - 3
 		m.paneW, m.paneH = rightW, bodyH
 		right, focus = m.paneContent(rightW, bodyH)
+		leftLines := m.summaryLines(leftW)
 		for len(leftLines) < bodyH {
 			leftLines = append(leftLines, "")
 		}
@@ -1036,6 +1097,7 @@ func (m *CreateModel) rebuildPane() {
 
 	// Stacked: compact summaries above the active editor.
 	m.paneW, m.paneH = contentW, bodyH
+	leftLines := m.summaryLines(contentW)
 	editor, editorFocus := m.paneContent(contentW, bodyH-7)
 	summaryBlock := strings.Join(leftLines, "\n") + "\n\n"
 	right = summaryBlock + editor
@@ -1084,10 +1146,29 @@ func hint(parts ...string) string {
 
 func (m CreateModel) footerHints() string {
 	if m.mode == formEditing && isSimpleField(m.active) {
+		if m.active == fieldNotes {
+			return hint(
+				short(m.keys, "field", "confirm")+" finish",
+				short(m.keys, "field", "cancel")+" cancel",
+				short(m.keys, "field", "notes_newline")+" newline",
+				short(m.keys, "field", "external_editor")+" editor",
+				short(m.keys, "form", "save")+" save",
+			)
+		}
+		if m.active == fieldDate {
+			return hint(
+				short(m.keys, "field", "confirm")+" finish",
+				short(m.keys, "field", "cancel")+" cancel",
+				short(m.keys, "form", "save")+" save",
+				firstShort(m.keys, "calendar", "left")+"/"+firstShort(m.keys, "calendar", "right")+" day",
+				firstShort(m.keys, "calendar", "up")+"/"+firstShort(m.keys, "calendar", "down")+" week",
+				firstShort(m.keys, "calendar", "month_prev")+"/"+firstShort(m.keys, "calendar", "month_next")+" month",
+				firstShort(m.keys, "calendar", "reset")+" reset",
+			)
+		}
 		return hint(
 			short(m.keys, "field", "confirm")+" finish",
 			short(m.keys, "field", "cancel")+" cancel",
-			short(m.keys, "field", "next_field")+" next",
 			short(m.keys, "form", "save")+" save",
 		)
 	}
@@ -1108,6 +1189,16 @@ func short(keys keybind.Map, scope, action string) string {
 	return keybind.ShortKeys(keys.Aliases(scope, action))
 }
 
+// firstShort renders the first configured alias of scope.action, empty when
+// the action is disabled.
+func firstShort(keys keybind.Map, scope, action string) string {
+	aliases := keys.Aliases(scope, action)
+	if len(aliases) == 0 {
+		return ""
+	}
+	return keybind.ShortKey(aliases[0])
+}
+
 // paneContent renders the right-hand pane for the current state and returns
 // its focus line. It sizes the active child to the actual pane dimensions.
 func (m *CreateModel) paneContent(width, height int) (string, int) {
@@ -1122,12 +1213,16 @@ func (m *CreateModel) paneContent(width, height int) (string, int) {
 	if m.mode == formEditing {
 		switch m.active {
 		case fieldTitle:
+			m.titleInput.SetWidth(width)
 			return m.titleInput.View(), 0
 		case fieldNotes:
+			m.notesInput.SetWidth(max(10, width-2))
+			m.notesInput.SetHeight(height)
 			return m.notesInput.View(), 0
 		case fieldDate:
 			return m.picker.View(), m.picker.FocusLine()
 		case fieldTime:
+			m.timeInput.SetWidth(width)
 			var b strings.Builder
 			b.WriteString(m.timeInput.View())
 			b.WriteString("\n")
@@ -1151,7 +1246,7 @@ func (m *CreateModel) paneContent(width, height int) (string, int) {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Foreground(styles.Teal).Bold(true).Render(name))
 	b.WriteString("\n\n")
-	b.WriteString(value)
+	b.WriteString(lipgloss.NewStyle().Width(width).Render(value))
 	b.WriteString("\n\n")
 	b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).Render(hint(
 		short(m.keys, "form", "edit")+" edit",

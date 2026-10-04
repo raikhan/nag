@@ -75,7 +75,7 @@ func applyInputStyles(ti *textinput.Model) {
 func applyInputKeyMap(m *Model) {
 	km := textinput.DefaultKeyMap()
 	reserved := map[string]bool{}
-	for _, a := range []string{"left", "down", "up", "right", "complete", "next_suggestion", "previous_suggestion"} {
+	for _, a := range []string{"left", "down", "up", "right", "complete", "next_suggestion", "previous_suggestion", "month_prev", "month_next", "reset"} {
 		for _, alias := range m.keys.Aliases("calendar", a) {
 			reserved[alias] = true
 		}
@@ -321,6 +321,21 @@ func (m *Model) moveHighlight(days int) {
 	m.reparse()
 }
 
+// moveHighlightMonths moves the highlight n whole months, clamping the day
+// when the target month is shorter (Jan 31 → Feb 28).
+func (m *Model) moveHighlightMonths(n int) {
+	loc := m.base.Location()
+	y, mo := m.highlight.Year(), int(m.highlight.Month())-1+n
+	y += mo / 12
+	mo = ((mo % 12) + 12) % 12
+	first := time.Date(y, time.Month(mo)+1, 1, 0, 0, 0, 0, loc)
+	day := min(m.highlight.Day(), first.AddDate(0, 1, -1).Day())
+	h := time.Date(y, time.Month(mo)+1, day, 0, 0, 0, 0, loc)
+	m.highlight = h
+	m.input.SetValue(h.Format("2006-01-02"))
+	m.reparse()
+}
+
 // Update handles picker keys. Calendar navigation precedes text editing only
 // while the due field is focused (the outer form routes keys here).
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
@@ -341,6 +356,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil
 		case key.Matches(keyMsg, m.keys.Bind("calendar", "down")):
 			m.moveHighlight(7)
+			return m, nil
+		case key.Matches(keyMsg, m.keys.Bind("calendar", "month_prev")):
+			m.moveHighlightMonths(-1)
+			return m, nil
+		case key.Matches(keyMsg, m.keys.Bind("calendar", "month_next")):
+			m.moveHighlightMonths(1)
+			return m, nil
+		case key.Matches(keyMsg, m.keys.Bind("calendar", "reset")):
+			m.SetValue("") // SetValue reparses → highlight back to base
 			return m, nil
 		case key.Matches(keyMsg, m.keys.Bind("calendar", "complete")):
 			m.complete()

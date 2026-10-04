@@ -91,8 +91,8 @@ func Registry() []Action {
 			// field
 			{"field", "confirm", []string{"enter"}, "Finish field"},
 			{"field", "cancel", []string{"esc"}, "Cancel field"},
-			{"field", "next_field", []string{"tab"}, "Next field"},
-			{"field", "previous_field", []string{"shift+tab"}, "Previous field"},
+			{"field", "notes_newline", []string{"ctrl+j"}, "New line in notes"},
+			{"field", "external_editor", []string{"ctrl+o"}, "Edit notes in $EDITOR"},
 			// choice_field
 			{"choice_field", "open", []string{"enter", "space"}, "Open choices"},
 			// selector
@@ -102,13 +102,16 @@ func Registry() []Action {
 			{"selector", "cancel", []string{"esc"}, "Cancel selection"},
 			{"selector", "toggle", []string{"space"}, "Toggle option"},
 			// calendar
-			{"calendar", "left", []string{"ctrl+h"}, "Back one day"},
-			{"calendar", "down", []string{"ctrl+j"}, "Forward one week"},
-			{"calendar", "up", []string{"ctrl+k"}, "Back one week"},
-			{"calendar", "right", []string{"ctrl+l"}, "Forward one day"},
+			{"calendar", "left", []string{"ctrl+left", "ctrl+h"}, "Back one day"},
+			{"calendar", "down", []string{"ctrl+down", "ctrl+j"}, "Forward one week"},
+			{"calendar", "up", []string{"ctrl+up", "ctrl+k"}, "Back one week"},
+			{"calendar", "right", []string{"ctrl+right", "ctrl+l"}, "Forward one day"},
 			{"calendar", "complete", []string{"ctrl+y"}, "Accept completion"},
-			{"calendar", "next_suggestion", []string{"ctrl+n", "down"}, "Next suggestion"},
-			{"calendar", "previous_suggestion", []string{"ctrl+p", "up"}, "Previous suggestion"},
+			{"calendar", "next_suggestion", []string{"down"}, "Next suggestion"},
+			{"calendar", "previous_suggestion", []string{"up"}, "Previous suggestion"},
+			{"calendar", "month_prev", []string{"ctrl+pgup", "ctrl+p"}, "Back one month"},
+			{"calendar", "month_next", []string{"ctrl+pgdown", "ctrl+n"}, "Forward one month"},
+			{"calendar", "reset", []string{"ctrl+d"}, "Clear the date field"},
 			// confirm
 			{"confirm", "yes", []string{"y", "Y", "enter"}, "Confirm"},
 			{"confirm", "no", []string{"n", "N", "esc"}, "Cancel"},
@@ -327,6 +330,11 @@ func ShortKey(alias string) string {
 	s = strings.ReplaceAll(s, "ctrl+", "C-")
 	s = strings.ReplaceAll(s, "alt+", "M-")
 	s = strings.ReplaceAll(s, "shift+", "S-")
+	s = strings.ReplaceAll(s, "+left", "+←")
+	s = strings.ReplaceAll(s, "+right", "+→")
+	s = strings.ReplaceAll(s, "+up", "+↑")
+	s = strings.ReplaceAll(s, "+down", "+↓")
+	s = strings.ReplaceAll(s, "+pgdown", "+pgdn")
 	return s
 }
 

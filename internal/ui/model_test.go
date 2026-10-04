@@ -862,3 +862,70 @@ func TestAceTimeoutGenerations(t *testing.T) {
 		}
 	})
 }
+
+// TestV2SyncRefreshPreservesSelection covers the 2s server-side sync: an
+// identical refresh skips the panel write entirely, and a changed refresh
+// keeps the selection on the same reminder ID.
+func TestV2SyncRefreshPreservesSelection(t *testing.T) {
+	m := newTestModel(t)
+	if !m.reminderPanel.SelectID("r-query") {
+		t.Fatal("could not select r-query")
+	}
+	identical := []reminders.Reminder{
+		{ID: "r-alpha", Title: "Alpha"},
+		{ID: "r-query", Title: "Query"},
+	}
+	m = deliver2(t, m, messages.RemindersLoadedMsg{ListID: "alpha", Reminders: identical})
+	if m.displayedListID != "alpha" {
+		t.Fatalf("displayedListID = %q", m.displayedListID)
+	}
+	if r, ok := m.reminderPanel.SelectedReminder(); !ok || r.ID != "r-query" {
+		t.Fatalf("identical refresh moved selection to %v", r)
+	}
+
+	// First item deleted server-side: the same reminder stays selected.
+	m = deliver2(t, m, messages.RemindersLoadedMsg{ListID: "alpha", Reminders: identical[1:]})
+	if r, ok := m.reminderPanel.SelectedReminder(); !ok || r.ID != "r-query" {
+		t.Fatalf("deletion shifted selection to %v", r)
+	}
+}
+
+// TestV2SidebarNavigationLoadsListWithoutEnter covers the right panel
+// following sidebar navigation: moving down loads the highlighted list and
+// Enter on the open list reloads and requests focus.
+func TestV2SidebarNavigationLoadsListWithoutEnter(t *testing.T) {
+	keys := mustCompileDefaults(t)
+	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1)
+	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
+		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
+		{ID: "query", Title: "Query", Kind: reminders.ListNormal},
+	}})
+	if m.selectedList == nil || m.selectedList.ID != "alpha" {
+		t.Fatalf("startup did not load the first list: %v", m.selectedList)
+	}
+
+	// Sidebar navigation loads the highlighted list without Enter.
+	m, cmd := deliver(t, m, tea.KeyPressMsg{Code: 'j', Text: "j"})
+	if cmd == nil {
+		t.Fatal("navigation did not emit a fetch command")
+	}
+	if m.selectedList == nil || m.selectedList.ID != "query" {
+		t.Fatalf("selection = %v, want query", m.selectedList)
+	}
+
+	// Navigating within the open list does not refetch.
+	_, cmd = deliver(t, m, tea.KeyPressMsg{Code: 'j', Text: "j"})
+	if cmd != nil {
+		t.Fatal("staying on the open list refetched")
+	}
+
+	// Enter on the open list reloads and moves focus once loaded.
+	m, cmd = deliver(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter did not reload the open list")
+	}
+	if !m.pendingFocus {
+		t.Fatal("enter did not set pendingFocus")
+	}
+}

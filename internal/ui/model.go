@@ -153,14 +153,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case tea.MouseWheelMsg:
 			if msg.Button == tea.MouseWheelUp || msg.Button == tea.MouseWheelDown {
+				var wheelCmds []tea.Cmd
 				var cmd tea.Cmd
 				switch target {
 				case PanelLists:
 					m.listPanel, cmd = m.listPanel.Update(msg)
+					wheelCmds = append(wheelCmds, cmd)
+					if c := m.syncSelectedList(false); c != nil {
+						wheelCmds = append(wheelCmds, c)
+					}
 				case PanelReminders:
 					m.reminderPanel, cmd = m.reminderPanel.Update(msg)
+					wheelCmds = append(wheelCmds, cmd)
 				}
-				return m, cmd
+				return m, tea.Batch(wheelCmds...)
 			}
 		}
 
@@ -195,6 +201,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusBar.ClearError()
 		m.listPanel.SetLists(msg.Lists)
 		m.resize()
+		// Populate the right panel with the initially highlighted list.
+		if m.selectedList == nil {
+			if c := m.syncSelectedList(false); c != nil {
+				return m, c
+			}
+		}
 		return m, nil
 
 	case messages.RemindersLoadedMsg:
@@ -215,6 +227,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.displayedListID = msg.ListID
 		if m.sortMode != reminders.SortDefault {
 			reminders.ApplySort(msg.Reminders, m.sortMode)
+		}
+		if reminders.RemindersEqual(msg.Reminders, m.reminderPanel.Reminders()) {
+			// Server-side state is unchanged: a 2s poll must not churn the
+			// panel. Focus requests still complete.
+			if m.pendingFocus {
+				m.pendingFocus = false
+				m.cycleFocus(1)
+			}
+			return m, nil
 		}
 		m.reminderPanel.SetReminders(msg.Reminders)
 		m.resize()
@@ -461,6 +482,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.listPanel, cmd = m.listPanel.Update(msg)
 		cmds = append(cmds, cmd)
+		// Sidebar navigation loads the highlighted list without Enter.
+		if c := m.syncSelectedList(false); c != nil {
+			cmds = append(cmds, c)
+		}
 	case PanelReminders:
 		var cmd tea.Cmd
 		m.reminderPanel, cmd = m.reminderPanel.Update(msg)
@@ -565,16 +590,32 @@ func (m *Model) cycleFocus(dir int) {
 	}
 }
 
+// syncSelectedList loads the currently highlighted sidebar list into the
+// reminder panel. focusAfterLoad moves focus to the reminders panel once
+// loaded (the Enter behavior); navigation passes false.
+func (m *Model) syncSelectedList(focusAfterLoad bool) tea.Cmd {
+	list, ok := m.listPanel.SelectedList()
+	if !ok {
+		return nil
+	}
+	if m.selectedList != nil && m.selectedList.ID == list.ID {
+		if focusAfterLoad {
+			m.pendingFocus = true
+			return m.fetchSelectedReminders() // Enter on the open list: reload + focus
+		}
+		return nil
+	}
+	m.selectedList = &list
+	m.pendingFocus = focusAfterLoad
+	m.reminderPanel.SetTitle(list.Title)
+	m.statusBar.SetLoading("Loading reminders...")
+	return m.fetchSelectedReminders()
+}
+
 func (m *Model) handleEnter() tea.Cmd {
 	switch m.focusedPanel {
 	case PanelLists:
-		if list, ok := m.listPanel.SelectedList(); ok {
-			m.selectedList = &list
-			m.pendingFocus = true
-			m.reminderPanel.SetTitle(list.Title)
-			m.statusBar.SetLoading("Loading reminders...")
-			return m.fetchSelectedReminders()
-		}
+		return m.syncSelectedList(true)
 	}
 	return nil
 }

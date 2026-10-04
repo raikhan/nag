@@ -186,18 +186,14 @@ func (m *Model) aceExecute(t aceTarget) tea.Cmd {
 		if !m.listPanel.SelectID(t.id) {
 			return nil
 		}
-		list, ok := m.listPanel.SelectedList()
-		if !ok {
+		if _, ok := m.listPanel.SelectedList(); !ok {
 			return nil
 		}
 		m.setFocus(PanelLists)
-		m.selectedList = &list
-		m.pendingFocus = false
-		m.reminderPanel.SetTitle(list.Title)
+		m.selectedList = nil // force a reload even for the open list
 		m.reminderPanel.SetReminders(nil)
 		m.displayedListID = ""
-		m.statusBar.SetLoading("Loading reminders...")
-		return m.fetchSelectedReminders()
+		return m.syncSelectedList(false)
 	}
 	return nil
 }

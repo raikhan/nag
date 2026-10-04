@@ -1,6 +1,7 @@
 package dialog
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,27 @@ func TestCreateEditPaneLayout(t *testing.T) {
 		joined := strings.Join(lines, "\n")
 		if !strings.Contains(joined, "invalid date") {
 			t.Fatal("sticky error not rendered")
+		}
+		// The vertical divider must sit at one fixed column on every body
+		// line of the side-by-side layout (rune index: stripped lines are
+		// all single-cell runes, and "│" is multi-byte). Only lines with
+		// three bars are body lines; the outer bars are the dialog border.
+		colSets := map[string]bool{}
+		for _, l := range lines {
+			cols := []int{}
+			col := 0
+			for _, r := range l {
+				if r == '│' {
+					cols = append(cols, col)
+				}
+				col++
+			}
+			if len(cols) >= 3 {
+				colSets[fmt.Sprint(cols)] = true
+			}
+		}
+		if len(colSets) > 1 {
+			t.Fatalf("divider column drifted: %v", colSets)
 		}
 	})
 }

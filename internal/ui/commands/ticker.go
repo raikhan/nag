@@ -7,7 +7,7 @@ import (
 	"github.com/oronbz/nag/internal/ui/messages"
 )
 
-const RefreshInterval = 10 * time.Second
+const RefreshInterval = 2 * time.Second
 
 func AutoRefreshTick() tea.Cmd {
 	return tea.Tick(RefreshInterval, func(time.Time) tea.Msg {

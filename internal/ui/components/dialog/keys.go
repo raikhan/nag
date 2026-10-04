@@ -66,13 +66,13 @@ func projectTextInputKeys(m *textinput.Model, keys keybind.Map, reservedScopes .
 func scopeActions(scope string) []string {
 	switch scope {
 	case "calendar":
-		return []string{"left", "down", "up", "right", "complete", "next_suggestion", "previous_suggestion"}
+		return []string{"left", "down", "up", "right", "complete", "next_suggestion", "previous_suggestion", "month_prev", "month_next", "reset"}
 	case "selector":
 		return []string{"down", "up", "confirm", "cancel", "toggle"}
 	case "dialog":
 		return []string{"submit", "cancel", "next_field", "previous_field"}
 	case "field":
-		return []string{"confirm", "cancel", "next_field", "previous_field"}
+		return []string{"confirm", "cancel", "notes_newline", "external_editor"}
 	case "choice_field":
 		return []string{"open"}
 	case "confirm":

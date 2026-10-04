@@ -95,10 +95,16 @@ The create/edit form keeps all six fields visible beside the active editor.
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `j` | Next field |
-| `Shift-Tab` / `k` | Previous field |
+| `Tab` / `j` | Next field (browsing only — disabled while a field editor is open) |
+| `Shift-Tab` / `k` | Previous field (browsing only) |
 | `t` `n` `d` `i` `p` `r` | Jump to Title / Notes / Date / Time / Priority / Recurrence and edit it |
 | `Enter` | Edit selected field / finish the open field |
+| `Ctrl-J` | New line in the Notes editor |
+| `Ctrl-O` | Edit the Notes value in `$EDITOR` |
+| `Ctrl-←` / `Ctrl-→` | Move the calendar highlight a day |
+| `Ctrl-↑` / `Ctrl-↓` | Move the calendar highlight a week |
+| `Ctrl-PgUp` / `Ctrl-PgDn` | Move the calendar highlight a month (clamped, e.g. Oct 31 → Nov 30) |
+| `Ctrl-D` | Clear the date field |
 | `Ctrl-S` | Save the form |
 | `Esc` | Cancel the open field, then the form |
 

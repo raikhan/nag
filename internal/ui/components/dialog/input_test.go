@@ -1,6 +1,7 @@
 package dialog
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -827,6 +828,26 @@ func TestDateAndTimeSubmission(t *testing.T) {
 		}
 	})
 
+	t.Run("fuzzy entry commits the resolved date", func(t *testing.T) {
+		m := newCreateAt(t, now)
+		m = openFieldFor(t, m, fieldDate)
+		m, _ = m.Update(tea.PasteMsg{Content: "tom"})
+		// While editing, the summary shows the resolved date, not the term.
+		if got := m.summaryValue(fieldDate); got != "2026-10-05" {
+			t.Fatalf("editing summary = %q, want 2026-10-05", got)
+		}
+		m = finishField(t, m)
+		if m.committedDate != "2026-10-05" {
+			t.Fatalf("committedDate = %q, want 2026-10-05", m.committedDate)
+		}
+		if m.picker.Value() != "2026-10-05" {
+			t.Fatalf("picker not synced to canonical date: %q", m.picker.Value())
+		}
+		if got := m.summaryValue(fieldDate); got != "2026-10-05" {
+			t.Fatalf("browsing summary = %q, want 2026-10-05", got)
+		}
+	})
+
 	t.Run("imported UTC timestamp prefills local date and time", func(t *testing.T) {
 		imported := time.Date(2026, 10, 3, 18, 13, 0, 0, time.UTC)
 		r := reminders.Reminder{ID: "r2", Title: "Fix", DueDate: &imported}
@@ -922,15 +943,24 @@ func TestDateSuggestionCyclingAndCompletion(t *testing.T) {
 	m, _ = m.Update(tea.PasteMsg{Content: "to"})
 	// Next suggestion cycles without resetting the candidate, then the
 	// picker-owned ctrl+y completes it.
-	m, _ = m.Update(ctrlPress('n'))
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m, _ = m.Update(ctrlPress('y'))
 	if m.picker.Value() != "tomorrow" {
 		t.Fatalf("completion produced %q", m.picker.Value())
 	}
-	// Ordinary Tab exits to browse the next field (no completion trap).
+	// Tab while the date editor is open is a no-op: the field stays open.
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	if m.mode != formBrowsing || m.selected != fieldTime {
-		t.Fatalf("tab did not browse: %v %d", m.mode, m.selected)
+	if m.mode != formEditing || m.active != fieldDate {
+		t.Fatalf("tab interrupted editing: mode %v active %d", m.mode, m.active)
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	if m.mode != formEditing || m.active != fieldDate {
+		t.Fatalf("shift-tab interrupted editing: mode %v active %d", m.mode, m.active)
+	}
+	// Enter finishes and browses the same row.
+	m = finishField(t, m)
+	if m.selected != fieldDate {
+		t.Fatalf("enter selected %d, want fieldDate", m.selected)
 	}
 	m, msg := ctrlS(t, m)
 	sub := msg.(CreateSubmitMsg)
@@ -1126,5 +1156,62 @@ func TestFormBehavioralRemaps(t *testing.T) {
 	sel := mustCmd(t, cmd, "selector confirm").(selectorSelectedMsg)
 	if len(sel.IDs) != 1 || sel.IDs[0] != "low" {
 		t.Fatalf("ctrl+d did not move the selection: %v", sel.IDs)
+	}
+}
+
+// TestV2NotesTextareaAndEditor covers the multiline Notes editor: ctrl+j
+// inserts a newline, Enter finishes the field, ctrl+o launches $EDITOR and
+// the editor result message replaces the value.
+func TestV2NotesTextareaAndEditor(t *testing.T) {
+	keys := testKeys(t)
+	m := NewCreate()
+	m.SetKeys(keys)
+	m.Show("Alpha")
+	m = openFieldFor(t, m, fieldNotes)
+
+	m, _ = m.Update(tea.PasteMsg{Content: "a"})
+	m, _ = m.Update(ctrlPress('j'))
+	m, _ = m.Update(tea.PasteMsg{Content: "b"})
+	if got := m.notesInput.Value(); got != "a\nb" {
+		t.Fatalf("notes value after ctrl+j = %q, want %q", got, "a\nb")
+	}
+	if got := m.summaryValue(fieldNotes); got != "a b" {
+		t.Fatalf("summary flattens newlines: got %q, want %q", got, "a b")
+	}
+
+	// Enter finishes the field; the multiline value survives.
+	m = finishField(t, m)
+	if m.notesInput.Value() != "a\nb" {
+		t.Fatalf("notes value lost after finishing: %q", m.notesInput.Value())
+	}
+
+	// ctrl+o on Notes launches the editor; on other fields it does nothing.
+	m = openFieldFor(t, m, fieldNotes)
+	m2, cmd := m.Update(ctrlPress('o'))
+	if cmd == nil {
+		t.Fatal("ctrl+o did not launch the notes editor")
+	}
+	if m2.mode != formEditing || m2.active != fieldNotes {
+		t.Fatalf("editor launch changed field state (mode %v active %v)", m2.mode, m2.active)
+	}
+	m3 := NewCreate()
+	m3.SetKeys(keys)
+	m3.Show("Alpha")
+	m3 = openFieldFor(t, m3, fieldTitle)
+	if _, cmd := m3.Update(ctrlPress('o')); cmd != nil {
+		t.Fatal("ctrl+o must not trigger outside the Notes field")
+	}
+
+	// The editor completion message replaces the value and stays editing.
+	m4, _ := m2.Update(notesEditorDoneMsg{content: "line1\nline2"})
+	if m4.notesInput.Value() != "line1\nline2" {
+		t.Fatalf("editor content not applied: %q", m4.notesInput.Value())
+	}
+	if m4.mode != formEditing || m4.active != fieldNotes {
+		t.Fatalf("editor result dropped editing state (mode %v active %v)", m4.mode, m4.active)
+	}
+	m5, _ := m2.Update(notesEditorDoneMsg{err: errors.New("boom")})
+	if m5.errText == "" {
+		t.Fatal("editor failure not surfaced")
 	}
 }

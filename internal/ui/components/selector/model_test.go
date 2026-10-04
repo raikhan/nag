@@ -1,6 +1,7 @@
 package selector
 
 import (
+	"strings"
 	"testing"
 
 	"charm.land/bubbles/v2/key"
@@ -40,6 +41,10 @@ func TestFuzzySelectionAndCancellation(t *testing.T) {
 	s.Open(opts, nil, false)
 	if !s.Visible() {
 		t.Fatal("chooser not visible after open")
+	}
+	// Single-select rows are plain labels: no checkbox glyphs.
+	if v := s.View(); strings.Contains(v, "☐") || strings.Contains(v, "☑") {
+		t.Fatalf("single-select chooser shows checkbox glyphs: %q", v)
 	}
 
 	// Typing reduces the choices to High; the query is not altered by nav keys.
@@ -105,6 +110,10 @@ func TestFuzzySelectionAndCancellation(t *testing.T) {
 	// Multi-select remembers hidden choices across query changes.
 	s = New(keys)
 	s.Open(opts, []string{"low"}, true)
+	// Committed multi-select choices keep their checked marker.
+	if v := s.View(); !strings.Contains(v, "☑") {
+		t.Fatalf("multi-select chooser lost the committed marker: %q", v)
+	}
 	s, _ = s.Update(keyPress(' ', " "))
 	// Resolve what space toggled: with empty query the first item is "None".
 	// Toggle it off if it was selected, else on; recompute the committed set
