@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/oronbz/nag/internal/keybind"
 	"github.com/oronbz/nag/internal/reminders"
+	"github.com/oronbz/nag/internal/ui/components/dialog"
 	"github.com/oronbz/nag/internal/ui/messages"
 )
 
@@ -1283,6 +1284,27 @@ func TestCreateOnlyMode(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(m.viewContent()), "Select a list") {
 		t.Fatalf("ctrl+s with the chooser open did not report the error:\n%s", ansi.Strip(m.viewContent()))
+	}
+
+	// A full save must reach the create command, not quit the process
+	// with the reminder silently dropped.
+	m = newCreate("Alpha")
+	m = deliver2(t, m, tea.KeyPressMsg{Code: 'c', Text: "c"})
+	m, cmd = deliver(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd == nil {
+		t.Fatal("ctrl+s produced no command in create-only mode")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); ok {
+		t.Fatal("create-only quit instead of submitting the reminder")
+	}
+	if _, ok := msg.(dialog.CreateSubmitMsg); !ok {
+		t.Fatalf("ctrl+s produced %T, want dialog.CreateSubmitMsg", msg)
+	}
+	// That message is what schedules the EventKit create.
+	_, createCmd := deliver(t, m, msg)
+	if createCmd == nil {
+		t.Fatal("CreateSubmitMsg scheduled no create command")
 	}
 
 	// Esc first cancels the open field, then the form, which is the only

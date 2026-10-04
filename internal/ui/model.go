@@ -493,6 +493,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.createDlg, cmd = m.createDlg.Update(msg)
 		if m.createOnly && !m.createDlg.Visible() {
+			if cmd != nil {
+				// A successful save hides the form and hands back the
+				// submit command. Quitting here would drop it and the
+				// reminder would never reach Reminders; ReminderCreatedMsg
+				// exits this mode once the create has run.
+				return m, cmd
+			}
 			// Esc closed the form and this mode has nothing behind it.
 			return m, tea.Quit
 		}
