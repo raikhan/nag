@@ -925,6 +925,20 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 		return m, nil
 	}
 
+	// Ctrl-S saves even while a chooser is open: the chooser is dismissed
+	// as a cancel so the form can validate. Left to the chooser, the save
+	// key produced no command, no error and no view change — the silent
+	// failure that lost reminders in `nag --create`.
+	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && m.selector.Visible() &&
+		key.Matches(keyMsg, m.keys.Bind("form", "save")) {
+		m.purpose = chooserNone
+		m.selector.Close()
+		m.choiceOpen = false
+		m.mode = formBrowsing
+		m.active = noField
+		m.blurAll()
+		return m, m.trySubmit()
+	}
 	// The outer selector captures all input while open.
 	if m.selector.Visible() {
 		var cmd tea.Cmd

@@ -1274,6 +1274,17 @@ func TestCreateOnlyMode(t *testing.T) {
 		t.Fatal("create-only with no list did not open the list picker")
 	}
 
+	// ctrl+s with the chooser open reports the missing list instead of
+	// being swallowed by the picker.
+	m = newCreate("")
+	m, cmd = deliver(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if cmd != nil {
+		t.Fatalf("ctrl+s submitted an unfinished form: %v", cmd())
+	}
+	if !strings.Contains(ansi.Strip(m.viewContent()), "Select a list") {
+		t.Fatalf("ctrl+s with the chooser open did not report the error:\n%s", ansi.Strip(m.viewContent()))
+	}
+
 	// Esc first cancels the open field, then the form, which is the only
 	// exit in this mode.
 	m = newCreate("Alpha")

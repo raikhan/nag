@@ -2065,6 +2065,56 @@ func TestCreateFormListPicker(t *testing.T) {
 			t.Fatalf("error %q on field %d", m.errText, m.active)
 		}
 	})
+
+	t.Run("ctrl+s while the chooser is open never fails silently", func(t *testing.T) {
+		// The `--create` default: no list chosen yet, chooser open.
+		m := NewCreate()
+		m.SetKeys(keys)
+		m.showAt("", testLists(), now)
+		if !m.selector.Visible() {
+			t.Fatal("the chooser did not open")
+		}
+		m, cmd := m.Update(ctrlPress('s'))
+		if cmd != nil {
+			t.Fatalf("ctrl+s submitted an unfinished form: %v", cmd())
+		}
+		if m.errText != "Select a list" {
+			t.Fatalf("errText = %q, want Select a list", m.errText)
+		}
+		if !m.selector.Visible() {
+			t.Fatal("ctrl+s closed the chooser instead of reporting the error")
+		}
+		m.SetSize(120, 40)
+		if !strings.Contains(ansi.Strip(m.View()), "Select a list") {
+			t.Fatal("the error is not visible in the form")
+		}
+	})
+
+	t.Run("ctrl+s with a chosen list submits and dismisses the chooser", func(t *testing.T) {
+		m := NewCreate()
+		m.SetKeys(keys)
+		m.showAt("Alpha", testLists(), now)
+		m = noFollow(m)
+		m = openFieldFor(t, m, fieldTitle)
+		m, _ = m.Update(tea.PasteMsg{Content: "Chore"})
+		m = finishField(t, m)
+		// Re-open the list picker to change it, then save instead.
+		m, _ = m.Update(press('l', "l"))
+		if !m.selector.Visible() {
+			t.Fatal("the list chooser did not re-open")
+		}
+		m, msg := ctrlS(t, m)
+		sub, ok := msg.(CreateSubmitMsg)
+		if !ok {
+			t.Fatalf("ctrl+s produced %T", msg)
+		}
+		if sub.Input.ListName != "Alpha" {
+			t.Fatalf("ListName = %q, want Alpha", sub.Input.ListName)
+		}
+		if m.selector.Visible() {
+			t.Fatal("the chooser stayed open after a successful save")
+		}
+	})
 }
 
 // TestCreateListColorRow covers the swatch row: the default, resolving a
@@ -2129,6 +2179,92 @@ func TestCreateListColorRow(t *testing.T) {
 		m, _ = m.Update(press('l', "l"))
 		if m.titleInput.Value() != "l" {
 			t.Fatalf("typing in the name field produced %q", m.titleInput.Value())
+		}
+	})
+
+	t.Run("plain and modified arrows both move the swatch", func(t *testing.T) {
+		m := NewCreateList()
+		m.SetKeys(keys)
+		m.Show()
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+		if m.colorIdx != 1 {
+			t.Fatalf("plain right moved to %d, want 1", m.colorIdx)
+		}
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+		if m.colorIdx != 0 {
+			t.Fatalf("plain left moved to %d, want 0", m.colorIdx)
+		}
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight, Mod: tea.ModCtrl})
+		if m.colorIdx != 1 {
+			t.Fatalf("ctrl+right moved to %d, want 1", m.colorIdx)
+		}
+		// Clamped at both ends, never wrapped.
+		for range 20 {
+			m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+		}
+		if m.colorIdx != 0 {
+			t.Fatalf("left wrapped to %d, want 0", m.colorIdx)
+		}
+		for range 40 {
+			m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+		}
+		if m.colorIdx != len(listColorPalette)-1 {
+			t.Fatalf("right stopped at %d, want %d", m.colorIdx, len(listColorPalette)-1)
+		}
+	})
+
+	t.Run("the cursor brackets the swatch and the name still accepts arrows", func(t *testing.T) {
+		m := NewCreateList()
+		m.SetKeys(keys)
+		m.Show()
+		m.SetSize(120, 40)
+		if strings.Contains(ansi.Strip(m.View()), "[") {
+			t.Fatal("the colour row drew a cursor while the name field had focus")
+		}
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+		view := ansi.Strip(m.View())
+		if !strings.Contains(view, "[◉]") {
+			t.Fatalf("no bracketed cursor on the selected swatch:\n%s", view)
+		}
+		if !strings.Contains(view, "Selected: [◉]") {
+			t.Fatalf("the Selected readout does not follow colorIdx:\n%s", view)
+		}
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // back to the name field
+		if strings.Contains(ansi.Strip(m.View()), "[") {
+			t.Fatal("the cursor survived the focus switch to the name field")
+		}
+		sel := ansi.Strip(m.View())
+		if !strings.Contains(sel, "Selected:") || !strings.Contains(sel, "◉") {
+			t.Fatalf("the Selected readout lost its swatch:\n%s", sel)
+		}
+	})
+
+	t.Run("letters type a name but still switch focus from the colour row", func(t *testing.T) {
+		m := NewCreateList()
+		m.SetKeys(keys)
+		m.Show()
+		m, _ = m.Update(press('j', "j"))
+		if m.titleInput.Value() != "j" {
+			t.Fatalf("j typed into the name field as %q", m.titleInput.Value())
+		}
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+		if m.focus != focusColor {
+			t.Fatalf("tab left focus on %v", m.focus)
+		}
+		m, _ = m.Update(press('j', "j"))
+		if m.focus != focusName {
+			t.Fatalf("j on the colour row left focus on %v", m.focus)
+		}
+		// The caret still moves inside the name field.
+		m, _ = m.Update(press('a', "a"))
+		m, _ = m.Update(press('b', "b"))
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+		m, _ = m.Update(press('x', "x"))
+		if m.titleInput.Value() != "jaxb" {
+			t.Fatalf("arrow did not move the caret: %q", m.titleInput.Value())
 		}
 	})
 

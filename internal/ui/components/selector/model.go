@@ -82,8 +82,9 @@ type Model struct {
 	height    int
 }
 
-// lineDelegate renders each option as a single line; the highlighted row is
-// the selection indicator for single-select choosers.
+// lineDelegate renders each option as a single line; the highlighted row
+// carries a "> " cursor so single-select choosers show where selection
+// currently sits.
 type lineDelegate struct{}
 
 func (d lineDelegate) Height() int  { return 1 }
@@ -98,8 +99,12 @@ func (d lineDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 		return
 	}
 	style := lipgloss.NewStyle()
+	// Two columns are reserved on every row so labels never shift as the
+	// highlight moves; the teal marker is the cursor.
+	marker := "  "
 	if index == m.Index() {
 		style = style.Foreground(styles.Teal).Bold(true)
+		marker = "> "
 	}
 	// The dot sits outside the checkbox prefix so it never shifts the
 	// checkbox column.
@@ -107,7 +112,7 @@ func (d lineDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 	if d := styles.ListDot(it.opt.Color); d != "" {
 		dot = d + " "
 	}
-	fmt.Fprint(w, style.Render(dot+it.Title()))
+	fmt.Fprint(w, style.Render(marker+dot+it.Title()))
 }
 
 // New builds a chooser with the given compiled bindings.
@@ -326,5 +331,9 @@ func (m Model) hintLine() string {
 		toggle := keybind.ShortKeys(m.keys.Aliases("selector", "toggle"))
 		return toggle + ": toggle  " + confirm + ": done  " + cancel + ": cancel"
 	}
-	return confirm + ": select  " + cancel + ": cancel"
+	nav := ""
+	if down, up := m.keys.Aliases("selector", "down"), m.keys.Aliases("selector", "up"); len(down) > 0 && len(up) > 0 {
+		nav = keybind.ShortKey(down[0]) + "/" + keybind.ShortKey(up[0]) + ": navigate  "
+	}
+	return nav + confirm + ": select  " + cancel + ": cancel"
 }

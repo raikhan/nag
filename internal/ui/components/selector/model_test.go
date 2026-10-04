@@ -6,6 +6,7 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/oronbz/nag/internal/keybind"
 )
@@ -183,6 +184,31 @@ func TestKeysDoNotLeakIntoQuery(t *testing.T) {
 	s, _ = s.Update(ctrlKey('j'))
 	if s.query.Value() != "" {
 		t.Fatalf("navigation leaked %q into query", s.query.Value())
+	}
+}
+
+// The highlighted option carries a cursor and the footer advertises the
+// keys that move it, so ctrl+j/ctrl+k are discoverable without the docs.
+func TestChooserShowsCursorAndNavHint(t *testing.T) {
+	s := New(testKeys(t))
+	s.SetSize(40, 14)
+	s.Open([]Option{{ID: "a", Label: "Alpha"}, {ID: "b", Label: "Beta"}}, nil, false)
+
+	v := ansi.Strip(s.View())
+	if !strings.Contains(v, "> Alpha") {
+		t.Fatalf("the highlighted option has no cursor:\n%s", v)
+	}
+	if strings.Contains(v, "> Beta") {
+		t.Fatalf("an unhighlighted option carries the cursor:\n%s", v)
+	}
+	if !strings.Contains(v, "C-j/C-k: navigate") {
+		t.Fatalf("the footer does not advertise navigation:\n%s", v)
+	}
+
+	s, _ = s.Update(ctrlKey('j'))
+	v = ansi.Strip(s.View())
+	if !strings.Contains(v, "> Beta") || strings.Contains(v, "> Alpha") {
+		t.Fatalf("ctrl+j did not move the cursor:\n%s", v)
 	}
 }
 

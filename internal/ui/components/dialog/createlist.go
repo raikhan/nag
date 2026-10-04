@@ -2,6 +2,7 @@ package dialog
 
 import (
 	"strings"
+	"unicode"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
@@ -62,9 +63,11 @@ func NewCreateList() CreateListModel {
 // SetKeys installs the compiled key bindings used by this dialog.
 func (m *CreateListModel) SetKeys(keys keybind.Map) {
 	m.keys = keys
-	// The dialog scope owns tab/shift+tab/j/k and enter/esc; reserving it
-	// keeps those keys from ever reaching the text input.
-	projectTextInputKeys(&m.titleInput, keys, "dialog")
+	// No scope is reserved: Update matches the dialog's own bindings —
+	// submit, cancel, the focus switches and the colour arrows — before
+	// anything reaches the input, so left/right/ctrl+arrows still move the
+	// caret while typing a name.
+	projectTextInputKeys(&m.titleInput, keys)
 }
 
 func (m *CreateListModel) Show() {
@@ -137,8 +140,7 @@ func (m CreateListModel) Update(msg tea.Msg) (CreateListModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		// Tab/Shift-Tab move between the name input and the colour row
 		// before anything else, so j/k typing still works in the input.
-		if key.Matches(msg, m.keys.Bind("dialog", "next_field")) ||
-			key.Matches(msg, m.keys.Bind("dialog", "previous_field")) {
+		if m.isFocusSwitch(msg, "next_field") || m.isFocusSwitch(msg, "previous_field") {
 			if m.focus == focusName {
 				m.setFocus(focusColor)
 			} else {
@@ -146,17 +148,16 @@ func (m CreateListModel) Update(msg tea.Msg) (CreateListModel, tea.Cmd) {
 			}
 			return m, nil
 		}
-		// On the colour row the calendar arrows walk the swatches,
-		// matching how the datepicker consumes its own scope. Clamped,
-		// never wrapped.
+		// On the colour row the arrows walk the swatches. Clamped, never
+		// wrapped, and never forwarded to the name input.
 		if m.focus == focusColor {
 			switch {
-			case key.Matches(msg, m.keys.Bind("calendar", "left")):
+			case key.Matches(msg, m.keys.Bind("dialog", "color_prev")):
 				if m.colorIdx > 0 {
 					m.colorIdx--
 				}
 				return m, nil
-			case key.Matches(msg, m.keys.Bind("calendar", "right")):
+			case key.Matches(msg, m.keys.Bind("dialog", "color_next")):
 				if m.colorIdx < len(listColorPalette)-1 {
 					m.colorIdx++
 				}
@@ -191,32 +192,58 @@ func (m CreateListModel) Update(msg tea.Msg) (CreateListModel, tea.Cmd) {
 	return m, cmd
 }
 
-// colorRow renders one cell per palette entry, separated by a space. The
-// focused-and-selected cell is a bold ringed glyph; everything else uses the
-// unfocused glyph. 13 cells fit well inside the 74-wide dialog.
+// isFocusSwitch reports whether the key moves focus between the name field
+// and the colour row. A bare printable alias (the default "j"/"k") only
+// counts while the colour row is focused, so the name field keeps it as
+// text; any modified alias always moves focus.
+func (m CreateListModel) isFocusSwitch(msg tea.KeyPressMsg, action string) bool {
+	if !key.Matches(msg, m.keys.Bind("dialog", action)) {
+		return false
+	}
+	for _, a := range m.keys.Aliases("dialog", action) {
+		if a == msg.String() && isPrintableAlias(a) {
+			return m.focus == focusColor
+		}
+	}
+	return true
+}
+
+// isPrintableAlias reports whether an alias is one printable rune, i.e.
+// something a text input would receive as text.
+func isPrintableAlias(alias string) bool {
+	r := []rune(alias)
+	return len(r) == 1 && unicode.IsPrint(r[0])
+}
+
+// colorCell renders one swatch. Index 0 is the dim "no colour" circle, the
+// selected entry is a bold ring, and the entry the cursor is on gets teal
+// brackets. Every cell is exactly three columns wide so the row never
+// shifts horizontally as the cursor moves.
+func (m CreateListModel) colorCell(i int) string {
+	glyph, hue := "●", lipgloss.Color(listColorPalette[i])
+	if i == 0 {
+		glyph, hue = "○", styles.DimGray
+	}
+	style := lipgloss.NewStyle().Foreground(hue)
+	if i == m.colorIdx {
+		glyph, style = "◉", style.Bold(true)
+		if i == 0 {
+			glyph = "◌"
+		}
+	}
+	left, right := " ", " "
+	if m.focus == focusColor && i == m.colorIdx {
+		left, right = "[", "]"
+	}
+	bracket := lipgloss.NewStyle().Foreground(styles.Teal)
+	return bracket.Render(left) + style.Render(glyph) + bracket.Render(right)
+}
+
+// colorRow renders one cell per palette entry, separated by a space.
 func (m CreateListModel) colorRow() string {
 	cells := make([]string, 0, len(listColorPalette))
-	for i, hex := range listColorPalette {
-		selected := i == m.colorIdx
-		glyph := "●"
-		if i == 0 {
-			glyph = "○"
-		}
-		style := lipgloss.NewStyle()
-		switch {
-		case i == 0:
-			style = style.Foreground(styles.DimGray)
-		default:
-			style = style.Foreground(lipgloss.Color(hex))
-		}
-		if selected {
-			glyph = "◉"
-			if i == 0 {
-				glyph = "◌"
-			}
-			style = style.Bold(true)
-		}
-		cells = append(cells, style.Render(glyph))
+	for i := range listColorPalette {
+		cells = append(cells, m.colorCell(i))
 	}
 	return strings.Join(cells, " ")
 }
@@ -230,21 +257,20 @@ func (m CreateListModel) View() string {
 	footer := keybind.ShortKeys(m.keys.Aliases("dialog", "submit")) + ": create  " +
 		keybind.ShortKeys(m.keys.Aliases("dialog", "cancel")) + ": cancel  " +
 		keybind.ShortKeys(m.keys.Aliases("dialog", "next_field")) + ": focus  " +
-		keybind.ShortKeys(m.keys.Aliases("calendar", "left")) + "/" +
-		keybind.ShortKeys(m.keys.Aliases("calendar", "right")) + ": colour"
+		firstShort(m.keys, "dialog", "color_prev") + "/" + firstShort(m.keys, "dialog", "color_next") + ": colour"
 	if m.isEditing() {
 		dialogTitle = "Edit List"
 		footer = keybind.ShortKeys(m.keys.Aliases("dialog", "submit")) + ": save  " +
 			keybind.ShortKeys(m.keys.Aliases("dialog", "cancel")) + ": cancel  " +
 			keybind.ShortKeys(m.keys.Aliases("dialog", "next_field")) + ": focus  " +
-			keybind.ShortKeys(m.keys.Aliases("calendar", "left")) + "/" +
-			keybind.ShortKeys(m.keys.Aliases("calendar", "right")) + ": colour"
+			firstShort(m.keys, "dialog", "color_prev") + "/" + firstShort(m.keys, "dialog", "color_next") + ": colour"
 	}
 
 	title := styles.DialogTitleStyle.Render(dialogTitle)
 	content := title + "\n\n" +
 		m.titleInput.View() + "\n\n" +
-		lipgloss.NewStyle().Foreground(styles.DimGray).Render("Colour: ") + m.colorRow() + "\n\n" +
+		lipgloss.NewStyle().Foreground(styles.DimGray).Render("Colour:  ") + m.colorRow() + "\n" +
+		lipgloss.NewStyle().Foreground(styles.DimGray).Render("Selected: ") + m.colorCell(m.colorIdx) + "\n\n" +
 		lipgloss.NewStyle().Foreground(styles.DimGray).Render(footer)
 
 	dlg := styles.DialogStyle.Render(content)

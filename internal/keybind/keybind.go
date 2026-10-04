@@ -78,6 +78,8 @@ func Registry() []Action {
 			{"dialog", "cancel", []string{"esc"}, "Cancel dialog"},
 			{"dialog", "next_field", []string{"tab", "j"}, "Next field"},
 			{"dialog", "previous_field", []string{"shift+tab", "k"}, "Previous field"},
+			{"dialog", "color_prev", []string{"left", "ctrl+left", "ctrl+h"}, "Previous colour"},
+			{"dialog", "color_next", []string{"right", "ctrl+right", "ctrl+l"}, "Next colour"},
 			// form
 			{"form", "next_field", []string{"tab", "j"}, "Next field"},
 			{"form", "previous_field", []string{"shift+tab", "k"}, "Previous field"},
