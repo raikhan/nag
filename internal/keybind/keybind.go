@@ -76,6 +76,23 @@ func Registry() []Action {
 			{"dialog", "cancel", []string{"esc"}, "Cancel dialog"},
 			{"dialog", "next_field", []string{"tab"}, "Next field"},
 			{"dialog", "previous_field", []string{"shift+tab"}, "Previous field"},
+			// form
+			{"form", "next_field", []string{"tab", "j"}, "Next field"},
+			{"form", "previous_field", []string{"shift+tab", "k"}, "Previous field"},
+			{"form", "edit", []string{"enter"}, "Edit selected field"},
+			{"form", "save", []string{"ctrl+s"}, "Save form"},
+			{"form", "cancel", []string{"esc"}, "Cancel form"},
+			{"form", "jump_title", []string{"t"}, "Jump to title"},
+			{"form", "jump_notes", []string{"n"}, "Jump to notes"},
+			{"form", "jump_date", []string{"d"}, "Jump to date"},
+			{"form", "jump_time", []string{"i"}, "Jump to time"},
+			{"form", "jump_priority", []string{"p"}, "Jump to priority"},
+			{"form", "jump_recurrence", []string{"r"}, "Jump to recurrence"},
+			// field
+			{"field", "confirm", []string{"enter"}, "Finish field"},
+			{"field", "cancel", []string{"esc"}, "Cancel field"},
+			{"field", "next_field", []string{"tab"}, "Next field"},
+			{"field", "previous_field", []string{"shift+tab"}, "Previous field"},
 			// choice_field
 			{"choice_field", "open", []string{"enter", "space"}, "Open choices"},
 			// selector
@@ -89,7 +106,7 @@ func Registry() []Action {
 			{"calendar", "down", []string{"ctrl+j"}, "Forward one week"},
 			{"calendar", "up", []string{"ctrl+k"}, "Back one week"},
 			{"calendar", "right", []string{"ctrl+l"}, "Forward one day"},
-			{"calendar", "complete", []string{"tab"}, "Accept completion"},
+			{"calendar", "complete", []string{"ctrl+y"}, "Accept completion"},
 			{"calendar", "next_suggestion", []string{"ctrl+n", "down"}, "Next suggestion"},
 			{"calendar", "previous_suggestion", []string{"ctrl+p", "up"}, "Previous suggestion"},
 			// confirm
@@ -142,6 +159,8 @@ var scopeTitles = []struct {
 	{"list", "List navigation"},
 	{"filter", "Filter input"},
 	{"dialog", "Dialog"},
+	{"form", "Reminder form"},
+	{"field", "Field editor"},
 	{"choice_field", "Choice fields"},
 	{"selector", "Selector"},
 	{"calendar", "Date calendar"},
@@ -311,42 +330,46 @@ func ShortKey(alias string) string {
 	return s
 }
 
-// ValidateAceAlphabet checks the ace alphabet: at least two unique ASCII
-// lowercase letters, no duplicates, and no overlap with the reserved ace
-// cancel/backspace aliases.
-func ValidateAceAlphabet(alphabet string, cancelAliases, backspaceAliases []string) error {
+// EffectiveAceAlphabet validates the raw alphabet's invariant (nonempty,
+// ASCII lowercase, no duplicates) and then removes every single-letter alias
+// of the configured ace trigger (global.ace_jump), ace.cancel and
+// ace.backspace, retaining alphabet order. Modifier aliases such as
+// "ctrl+z" do not remove the bare letter. At least two usable letters must
+// remain; the result is the label alphabet the UI generates labels from.
+func EffectiveAceAlphabet(alphabet string, keys Map) (string, error) {
 	if strings.TrimSpace(alphabet) == "" {
-		return fmt.Errorf("ace alphabet must not be empty")
+		return "", fmt.Errorf("ace alphabet must not be empty")
 	}
 	seen := map[rune]bool{}
 	for _, r := range alphabet {
 		if r < 'a' || r > 'z' {
-			return fmt.Errorf("ace alphabet must contain only ASCII lowercase letters, found %q", string(r))
+			return "", fmt.Errorf("ace alphabet must contain only ASCII lowercase letters, found %q", string(r))
 		}
 		if seen[r] {
-			return fmt.Errorf("ace alphabet contains duplicate letter %q", string(r))
+			return "", fmt.Errorf("ace alphabet contains duplicate letter %q", string(r))
 		}
 		seen[r] = true
 	}
-	if len(seen) < 2 {
-		return fmt.Errorf("ace alphabet must contain at least two unique letters")
-	}
-	reserved := map[string]bool{}
-	for _, a := range cancelAliases {
-		reserved[a] = true
-	}
-	for _, a := range backspaceAliases {
-		reserved[a] = true
-	}
-	letters := make([]string, 0, len(seen))
-	for r := range seen {
-		letters = append(letters, string(r))
-	}
-	sort.Strings(letters)
-	for _, l := range letters {
-		if reserved[l] {
-			return fmt.Errorf("ace letter %q conflicts with a reserved ace key binding", l)
+	reserved := map[rune]bool{}
+	addReserved := func(scope, action string) {
+		for _, alias := range keys.Aliases(scope, action) {
+			runes := []rune(alias)
+			if len(runes) == 1 {
+				reserved[runes[0]] = true
+			}
 		}
 	}
-	return nil
+	addReserved("global", "ace_jump")
+	addReserved("ace", "cancel")
+	addReserved("ace", "backspace")
+	usable := make([]rune, 0, len(seen))
+	for _, r := range alphabet {
+		if !reserved[r] {
+			usable = append(usable, r)
+		}
+	}
+	if len(usable) < 2 {
+		return "", fmt.Errorf("ace alphabet must retain at least two usable letters after reserved keys, got %q", string(usable))
+	}
+	return string(usable), nil
 }

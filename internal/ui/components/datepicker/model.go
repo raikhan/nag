@@ -38,10 +38,14 @@ type Model struct {
 	height    int
 }
 
-// New builds a picker with the captured clock and editing anchor.
+// New builds a picker with the captured clock and editing anchor. The base
+// is normalized into now.Location() at local midnight so navigation, preview
+// and suggestions all render in the captured civil date.
 func New(now, base time.Time, keys keybind.Map) Model {
+	loc := now.Location()
+	base = time.Date(base.Year(), base.Month(), base.Day(), 0, 0, 0, 0, loc)
 	ti := textinput.New()
-	ti.Placeholder = "today, tue, +2d, sep 15, 2026-10-04 09:00"
+	ti.Placeholder = "today, tue, +2d, sep 15, 2026-10-04"
 	ti.CharLimit = 64
 	ti.Prompt = "Due date: "
 	ti.ShowSuggestions = true
@@ -65,6 +69,9 @@ func applyInputStyles(ti *textinput.Model) {
 
 // applyInputKeyMap rebinds the editor from keys.textinput, dropping the
 // aliases reserved by the calendar scope so they move the highlight instead.
+// Suggestion cycling is projected from the calendar scope onto the input's
+// suggestion bindings; Tab completion is disabled (completion is the
+// picker-owned calendar.complete binding handled in Update).
 func applyInputKeyMap(m *Model) {
 	km := textinput.DefaultKeyMap()
 	reserved := map[string]bool{}
@@ -85,6 +92,9 @@ func applyInputKeyMap(m *Model) {
 		}
 		*b = key.NewBinding(key.WithKeys(keep...))
 	}
+	project := func(b *key.Binding, scope, action string) {
+		*b = key.NewBinding(key.WithKeys(m.keys.Aliases(scope, action)...))
+	}
 	bind(&km.CharacterForward, "character_forward")
 	bind(&km.CharacterBackward, "character_backward")
 	bind(&km.WordForward, "word_forward")
@@ -98,9 +108,9 @@ func applyInputKeyMap(m *Model) {
 	bind(&km.LineStart, "line_start")
 	bind(&km.LineEnd, "line_end")
 	bind(&km.Paste, "paste")
-	bind(&km.AcceptSuggestion, "accept_suggestion")
-	bind(&km.NextSuggestion, "next_suggestion")
-	bind(&km.PrevSuggestion, "previous_suggestion")
+	km.AcceptSuggestion = key.NewBinding(key.WithKeys("\x00disabled"))
+	project(&km.NextSuggestion, "calendar", "next_suggestion")
+	project(&km.PrevSuggestion, "calendar", "previous_suggestion")
 	m.input.KeyMap = km
 }
 
@@ -167,7 +177,7 @@ func (m *Model) updateSuggestions() {
 		if len(stem) >= 1 && (stem[0] == '+' || stem[0] == '-') {
 			body := stem[1:]
 			if body != "" && allDigits(body) {
-				for _, unit := range []string{"h", "d", "w", "m", "y"} {
+				for _, unit := range []string{"d", "w", "m", "y"} {
 					add(stem + unit)
 				}
 			}
@@ -270,11 +280,11 @@ func (m *Model) Blur() {
 // Focused reports whether the picker is active.
 func (m Model) Focused() bool { return m.focused }
 
-// SetSize clamps the picker to the terminal size.
+// SetSize clamps the picker to the pane size.
 func (m *Model) SetSize(width, height int) {
 	m.width = width
 	m.height = height
-	m.input.SetWidth(min(width-12, 40))
+	m.input.SetWidth(max(1, min(width-12, 40)))
 }
 
 // Resolve parses the current input into a due timestamp.
@@ -285,32 +295,29 @@ func (m Model) Resolve() (*time.Time, error) {
 // Error returns the current inline parse error, if any.
 func (m Model) Error() string { return m.errText }
 
-// TryAcceptSuggestion accepts the highlighted differing completion, keeping
-// focus in the field. It reports whether the Tab keystroke was consumed; if
-// false the outer form should treat Tab as next-field.
-func (m *Model) TryAcceptSuggestion() bool {
+// complete accepts the highlighted differing suggestion via the picker-owned
+// calendar.complete binding.
+func (m *Model) complete() {
 	matched := m.input.MatchedSuggestions()
 	if len(matched) == 0 {
-		return false
+		return
 	}
 	idx := m.input.CurrentSuggestionIndex()
 	if idx >= len(matched) {
-		return false
+		return
 	}
 	suggestion := matched[idx]
 	if suggestion == m.input.Value() {
-		return false // fully completed text: no Tab trap
+		return // fully completed text
 	}
-	m.input.SetValue(suggestion)
-	m.reparse()
-	return true
+	m.SetValue(suggestion)
 }
 
-// moveHighlight shifts the calendar highlight and rewrites the text.
+// moveHighlight shifts the calendar highlight and rewrites the date text.
 func (m *Model) moveHighlight(days int) {
 	h := m.highlight.AddDate(0, 0, days)
 	m.highlight = h
-	m.input.SetValue(h.Local().Format("2006-01-02 15:04"))
+	m.input.SetValue(h.Format("2006-01-02"))
 	m.reparse()
 }
 
@@ -336,21 +343,20 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.moveHighlight(7)
 			return m, nil
 		case key.Matches(keyMsg, m.keys.Bind("calendar", "complete")):
-			return m, nil // Tab handled by the outer form via TryAcceptSuggestion
+			m.complete()
+			return m, nil
 		}
 	}
 
 	var cmd tea.Cmd
+	before := m.input.Value()
 	m.input, cmd = m.input.Update(msg)
-	if _, ok := msg.(tea.KeyPressMsg); ok || isPaste(msg) {
+	// Reparse/rebuild suggestions only when the value changed: rebuilding on
+	// a pure suggestion-navigation key would reset the highlighted candidate.
+	if m.input.Value() != before {
 		m.reparse()
 	}
 	return m, cmd
-}
-
-func isPaste(msg tea.Msg) bool {
-	_, ok := msg.(tea.PasteMsg)
-	return ok
 }
 
 // View renders the input, inline error, resolved preview and calendar.
@@ -364,7 +370,7 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	} else if v := strings.TrimSpace(m.input.Value()); v != "" {
 		if resolved, err := dateentry.Parse(v, m.now, m.base); err == nil {
-			preview := resolved.Local().Format("Mon Jan 2, 2006 15:04")
+			preview := resolved.In(m.now.Location()).Format("Mon Jan 2, 2006")
 			b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).Render("→ " + preview))
 			b.WriteString("\n")
 		}
@@ -376,7 +382,7 @@ func (m Model) View() string {
 			resolved, err := dateentry.Parse(cands[idx], m.now, m.base)
 			line := cands[idx]
 			if err == nil {
-				line += " → " + resolved.Local().Format("Jan 2 15:04")
+				line += " → " + resolved.In(m.now.Location()).Format("Jan 2, 2006")
 			}
 			b.WriteString(lipgloss.NewStyle().Foreground(styles.Teal).Render("⇥ " + line))
 			b.WriteString("\n")
@@ -413,14 +419,9 @@ func (m Model) calendarView() string {
 	b.WriteString("\n")
 
 	day := first.AddDate(0, 0, -offset)
-	lead := offset
-	for w := range 6 {
+	for range 6 {
 		row.Reset()
 		for col := range 7 {
-			if w == 0 && col < lead {
-				row.WriteString("   ")
-				continue
-			}
 			label := itoa(day.Day())
 			if len(label) == 1 {
 				label = " " + label
@@ -443,4 +444,30 @@ func (m Model) calendarView() string {
 		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// FocusLine returns the zero-based line of the calendar highlight within the
+// unframed View output, for viewport scrolling.
+func (m Model) FocusLine() int {
+	lines := 1 // input line
+	if m.errText != "" || strings.TrimSpace(m.input.Value()) != "" {
+		lines++
+	}
+	if len(m.input.MatchedSuggestions()) > 0 {
+		lines++
+	}
+	// Calendar header and weekday row precede the grid.
+	shown := m.highlight
+	first := time.Date(shown.Year(), shown.Month(), 1, 0, 0, 0, 0, m.base.Location())
+	offset := (int(first.Weekday()) + 6) % 7
+	row := 0
+	day := first.AddDate(0, 0, -offset)
+	for i := 0; ; i++ {
+		if day.Year() == shown.Year() && day.Month() == shown.Month() && day.Day() == shown.Day() {
+			row = i / 7
+			break
+		}
+		day = day.AddDate(0, 0, 1)
+	}
+	return lines + 2 + row
 }

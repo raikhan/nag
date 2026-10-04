@@ -67,7 +67,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	model := ui.NewModel(client, keys, cfg.AceAlphabet)
+	model := ui.NewModel(client, keys, cfg.AceAlphabet, cfg.AceTimeoutSeconds)
 	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

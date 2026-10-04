@@ -148,3 +148,34 @@ func TestKeysDoNotLeakIntoQuery(t *testing.T) {
 		t.Fatalf("navigation leaked %q into query", s.query.Value())
 	}
 }
+
+// TestPasteEditsQueryOnce verifies a paste becomes query text exactly once
+// and re-ranks the matches.
+func TestPasteEditsQueryOnce(t *testing.T) {
+	keys := testKeys(t)
+	opts := []Option{
+		{ID: "none", Label: "None"},
+		{ID: "low", Label: "Low"},
+		{ID: "medium", Label: "Medium"},
+		{ID: "high", Label: "High"},
+	}
+	s := New(keys)
+	s.SetSize(40, 14)
+	s.Open(opts, nil, false)
+
+	s, _ = s.Update(tea.PasteMsg{Content: "hi"})
+	if got := s.query.Value(); got != "hi" {
+		t.Fatalf("query = %q, want hi", got)
+	}
+	if got := len(s.list.VisibleItems()); got != 1 {
+		t.Fatalf("visible items = %d, want 1 (High)", got)
+	}
+	// A second paste appends, never duplicates.
+	s, _ = s.Update(tea.PasteMsg{Content: "gh"})
+	if got := s.query.Value(); got != "high" {
+		t.Fatalf("query = %q, want high", got)
+	}
+	if got := len(s.list.VisibleItems()); got != 1 {
+		t.Fatalf("visible items = %d, want 1", got)
+	}
+}

@@ -1,6 +1,7 @@
 package keybind
 
 import (
+	"strings"
 	"testing"
 
 	"charm.land/bubbles/v2/key"
@@ -84,23 +85,78 @@ func TestCompileKeepsCase(t *testing.T) {
 	}
 }
 
-func TestValidateAceAlphabet(t *testing.T) {
-	if err := ValidateAceAlphabet(DefaultAceAlphabet, []string{"esc"}, []string{"backspace"}); err != nil {
+func TestEffectiveAceAlphabet(t *testing.T) {
+	keys, err := Compile(Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The default trigger z is reserved; the rest of the alphabet survives in
+	// original order.
+	eff, err := EffectiveAceAlphabet(DefaultAceAlphabet, keys)
+	if err != nil {
 		t.Fatalf("default alphabet rejected: %v", err)
 	}
+	want := strings.ReplaceAll(DefaultAceAlphabet, "z", "")
+	if eff != want {
+		t.Fatalf("effective = %q, want %q", eff, want)
+	}
+
 	for _, bad := range []struct {
 		alpha string
-		cnl   []string
-		bksp  []string
+		keys  Map
 	}{
-		{"", nil, nil},
-		{"aab", nil, nil},
-		{"abc1", nil, nil},
-		{"a", nil, nil},
-		{"abc", []string{"a"}, nil},
+		{"", keys},
+		{"aab", keys},
+		{"abc1", keys},
+		{"a", keys},
+		// Trigger removal leaves fewer than two usable letters.
+		{"abc", mustCompileBindings(t, Bindings{
+			"global": {"ace_jump": {"a"}},
+			"ace":    {"cancel": {"b"}, "backspace": {"c"}},
+		})},
 	} {
-		if err := ValidateAceAlphabet(bad.alpha, bad.cnl, bad.bksp); err == nil {
+		if _, err := EffectiveAceAlphabet(bad.alpha, bad.keys); err == nil {
 			t.Errorf("alphabet %q expected error", bad.alpha)
 		}
 	}
+
+	// Multiple trigger aliases each remove their bare letter; modifier
+	// aliases such as ctrl+g do not remove bare g.
+	b := Bindings{
+		"global": {"ace_jump": {"a", "z", "ctrl+g"}},
+	}
+	keys2, err := Compile(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eff2, err := EffectiveAceAlphabet("azgcq", keys2)
+	if err != nil {
+		t.Fatalf("multi-alias alphabet rejected: %v", err)
+	}
+	if eff2 != "gcq" {
+		t.Fatalf("effective = %q, want %q", eff2, "gcq")
+	}
+
+	// Disabled trigger removes nothing.
+	b["global"] = map[string][]string{"ace_jump": {}}
+	keys3, err := Compile(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eff3, err := EffectiveAceAlphabet("azgcq", keys3)
+	if err != nil {
+		t.Fatalf("disabled-trigger alphabet rejected: %v", err)
+	}
+	if eff3 != "azgcq" {
+		t.Fatalf("effective = %q, want %q", eff3, "azgcq")
+	}
+}
+
+func mustCompileBindings(t *testing.T, b Bindings) Map {
+	t.Helper()
+	m, err := Compile(b)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	return m
 }

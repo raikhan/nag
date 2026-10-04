@@ -25,12 +25,23 @@ func mustCompileDefaults(t *testing.T) keybind.Map {
 	return keys
 }
 
+// mustEffectiveAceAlphabet computes the label alphabet a raw configured
+// alphabet produces against the given compiled bindings.
+func mustEffectiveAceAlphabet(t *testing.T, keys keybind.Map, alphabet string) string {
+	t.Helper()
+	eff, err := keybind.EffectiveAceAlphabet(alphabet, keys)
+	if err != nil {
+		t.Fatalf("effective ace alphabet for %q: %v", alphabet, err)
+	}
+	return eff
+}
+
 // newTestModel builds a root model with a fixed 120x32 terminal size and
 // seeded lists/reminders. It never calls Init, creates an EventKit client,
 // or executes backend commands.
 func newTestModel(t *testing.T) Model {
 	t.Helper()
-	m := NewModel(nil, mustCompileDefaults(t), keybind.DefaultAceAlphabet)
+	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -228,7 +239,7 @@ func TestV2BackgroundPreservesListState(t *testing.T) {
 // item is rendered at the list's full width, so the list must be sized to the
 // panel's inner content width (outer width minus the 2 border columns).
 func TestV2PanelContentFitsWidth(t *testing.T) {
-	m := NewModel(nil, mustCompileDefaults(t), keybind.DefaultAceAlphabet)
+	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -269,7 +280,7 @@ func TestRemappedListDownDrivesPanel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	m := NewModel(nil, keys, keybind.DefaultAceAlphabet)
+	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -300,7 +311,7 @@ func TestRemappedListDownDoesNotLeakIntoFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	m := NewModel(nil, keys, keybind.DefaultAceAlphabet)
+	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -332,7 +343,7 @@ func TestRemappedNextPanelDrivesRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	m := NewModel(nil, keys, keybind.DefaultAceAlphabet)
+	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -349,39 +360,13 @@ func TestRemappedNextPanelDrivesRoot(t *testing.T) {
 }
 
 // TestCompiledKeysCarryRemaps asserts the compiled map stored on the model
-// reflects configured remaps for the scope/action pairs owned by sibling
-// components (dialog submit, calendar right, selector down, ace trigger).
-func TestCompiledKeysCarryRemaps(t *testing.T) {
-	b := keybind.Defaults()
-	b["dialog"] = map[string][]string{"submit": {"ctrl+s"}}
-	b["calendar"] = map[string][]string{"right": {"ctrl+right"}}
-	b["selector"] = map[string][]string{"down": {"ctrl+down"}}
-	b["global"] = map[string][]string{"ace_jump": {"a"}}
-	keys, err := keybind.Compile(b)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	m := NewModel(nil, keys, keybind.DefaultAceAlphabet)
-	for _, tc := range []struct{ scope, action, alias string }{
-		{"dialog", "submit", "ctrl+s"},
-		{"calendar", "right", "ctrl+right"},
-		{"selector", "down", "ctrl+down"},
-		{"global", "ace_jump", "a"},
-	} {
-		aliases := m.keys.Aliases(tc.scope, tc.action)
-		if len(aliases) != 1 || aliases[0] != tc.alias {
-			t.Fatalf("%s.%s aliases = %v, want [%s]", tc.scope, tc.action, aliases, tc.alias)
-		}
-	}
-}
-
-func aceStart(t *testing.T, m Model) Model {
+func aceStart(t *testing.T, m Model) (Model, tea.Cmd) {
 	t.Helper()
-	next, _ := deliver(t, m, tea.KeyPressMsg{Code: 'z', Text: "z"})
+	next, cmd := deliver(t, m, tea.KeyPressMsg{Code: 'z', Text: "z"})
 	if !next.ace.active {
 		t.Fatal("pressing z did not enter ace mode")
 	}
-	return next
+	return next, cmd
 }
 
 // TestAceJumpSidebarSelectsListWithoutActions verifies a sidebar label
@@ -391,7 +376,7 @@ func TestAceJumpSidebarSelectsListWithoutActions(t *testing.T) {
 	m := newTestModel(t)
 	beforeLines := len(strings.Split(ansi.Strip(m.listPanel.View()), "\n"))
 
-	m = aceStart(t, m)
+	m, _ = aceStart(t, m)
 	if got := m.listPanel.VisibleIDs(); len(got) != 2 {
 		t.Fatalf("expected 2 sidebar ace targets, got %v", got)
 	}
@@ -431,7 +416,7 @@ func TestAceJumpSidebarSelectsListWithoutActions(t *testing.T) {
 func TestAceJumpReminderSelectsOnly(t *testing.T) {
 	m := newTestModel(t)
 	m = deliver2(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
-	m = aceStart(t, m)
+	m, _ = aceStart(t, m)
 
 	next, cmd := deliver(t, m, tea.KeyPressMsg{Code: 'f', Text: "f"})
 	if cmd != nil {
@@ -455,7 +440,7 @@ func TestAceJumpReminderSelectsOnly(t *testing.T) {
 // labels, dimming prefix narrowing, invalid extensions, backspace and
 // cancellation.
 func TestAceJumpTwoLetterLabelsPrefixBackspaceCancel(t *testing.T) {
-	m := NewModel(nil, mustCompileDefaults(t), "as")
+	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), "as"), -1)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "l1", Title: "One", Kind: reminders.ListNormal},
@@ -464,7 +449,7 @@ func TestAceJumpTwoLetterLabelsPrefixBackspaceCancel(t *testing.T) {
 	}})
 	m.selectedList = &reminders.ReminderList{ID: "l1", Title: "One", Kind: reminders.ListNormal}
 
-	m = aceStart(t, m)
+	m, _ = aceStart(t, m)
 	// 3 targets with the 2-letter alphabet "as" -> two-letter labels
 	// aa, as, sa.
 	view := ansi.Strip(m.listPanel.View())
@@ -508,7 +493,7 @@ func TestAceJumpTwoLetterLabelsPrefixBackspaceCancel(t *testing.T) {
 	}
 
 	// Cancel via esc clears labels and leaves the selection unchanged.
-	m = aceStart(t, m)
+	m, _ = aceStart(t, m)
 	before, _ := m.listPanel.SelectedList()
 	m = deliver2(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 	if m.ace.active {
@@ -526,7 +511,7 @@ func TestAceJumpTwoLetterLabelsPrefixBackspaceCancel(t *testing.T) {
 // input, not root shortcuts like delete.
 func TestAceJumpCapturesBeforeRootActions(t *testing.T) {
 	m := newTestModel(t)
-	m = aceStart(t, m)
+	m, _ = aceStart(t, m)
 	// d is an ace letter: with four targets it is a full label and jumps,
 	// but it must never open the delete dialog.
 	m = deliver2(t, m, tea.KeyPressMsg{Code: 'd', Text: "d"})
@@ -541,7 +526,7 @@ func TestAceJumpCapturesBeforeRootActions(t *testing.T) {
 // TestAceJumpExcludesSeparatorsOffScreenAndFilteredRows verifies target
 // eligibility at the panel level.
 func TestAceJumpExcludesSeparatorsOffScreenAndFilteredRows(t *testing.T) {
-	m := NewModel(nil, mustCompileDefaults(t), keybind.DefaultAceAlphabet)
+	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	lists := []reminders.ReminderList{
 		{ID: "today", Title: "Today", Kind: reminders.ListSmart},
@@ -641,7 +626,7 @@ func TestAceJumpIgnoresStaleListID(t *testing.T) {
 	}
 
 	// A nil selectedList also ignores the result.
-	m2 := NewModel(nil, mustCompileDefaults(t), keybind.DefaultAceAlphabet)
+	m2 := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1)
 	m2 = deliver2(t, m2, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m2 = deliver2(t, m2, messages.RemindersLoadedMsg{
 		Reminders: []reminders.Reminder{{ID: "x", Title: "X"}},
@@ -656,25 +641,25 @@ func TestAceJumpIgnoresStaleListID(t *testing.T) {
 func TestAceExitsOnResizeMouseListsAndTickButRetainsOnSpinner(t *testing.T) {
 	m := newTestModel(t)
 
-	m = aceStart(t, m)
+	m, _ = aceStart(t, m)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	if m.ace.active {
 		t.Fatal("resize must cancel ace")
 	}
 
-	m = aceStart(t, m)
+	m, _ = aceStart(t, m)
 	m = deliver2(t, m, tea.MouseClickMsg{X: 5, Y: 5, Button: tea.MouseLeft})
 	if m.ace.active {
 		t.Fatal("mouse activity must cancel ace")
 	}
 
-	m = aceStart(t, m)
+	m, _ = aceStart(t, m)
 	m = deliver2(t, m, messages.TickMsg{})
 	if m.ace.active {
 		t.Fatal("auto-refresh tick must cancel ace")
 	}
 
-	m = aceStart(t, m)
+	m, _ = aceStart(t, m)
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
 		{ID: "query", Title: "Query", Kind: reminders.ListNormal},
@@ -684,7 +669,7 @@ func TestAceExitsOnResizeMouseListsAndTickButRetainsOnSpinner(t *testing.T) {
 	}
 
 	// Spinner-only messages retain ace.
-	m = aceStart(t, m)
+	m, _ = aceStart(t, m)
 	m = deliver2(t, m, spinner.TickMsg{ID: m.spinner.ID()})
 	if !m.ace.active {
 		t.Fatal("spinner tick must retain ace")
@@ -694,7 +679,7 @@ func TestAceExitsOnResizeMouseListsAndTickButRetainsOnSpinner(t *testing.T) {
 // TestAceStartWithNoTargetsStaysNormal verifies ace does not activate
 // without jumpable rows and reports the reason.
 func TestAceStartWithNoTargetsStaysNormal(t *testing.T) {
-	m := NewModel(nil, mustCompileDefaults(t), keybind.DefaultAceAlphabet)
+	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, tea.KeyPressMsg{Code: 'z', Text: "z"})
 	if m.ace.active {
@@ -703,4 +688,177 @@ func TestAceStartWithNoTargetsStaysNormal(t *testing.T) {
 	if !strings.Contains(ansi.Strip(m.statusBar.View()), "No jump targets") {
 		t.Fatalf("expected status hint, view:\n%s", ansi.Strip(m.statusBar.View()))
 	}
+}
+
+// TestAceToggleAndTimeout verifies the configured trigger toggles ace off,
+// trigger letters never appear in labels, and the expiry timer honours
+// generation ordering instead of wall-clock sleeps.
+func TestAceToggleAndTimeout(t *testing.T) {
+	// Bindings whose trigger is ["a","ctrl+g"]: bare a leaves the label
+	// alphabet, ctrl+g does not remove bare g.
+	b := keybind.Defaults()
+	b["global"]["ace_jump"] = []string{"a", "ctrl+g"}
+	keys, err := keybind.Compile(b)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	eff := mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet)
+	if strings.ContainsRune(eff, 'a') {
+		t.Fatalf("trigger letter a must not be a label letter: %q", eff)
+	}
+	m := NewModel(nil, keys, eff, -1)
+	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
+		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
+		{ID: "query", Title: "Query", Kind: reminders.ListNormal},
+	}})
+	m.selectedList = &reminders.ReminderList{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal}
+
+	// Enter with a, exit with the alternate trigger ctrl+g; selection and
+	// labels restore.
+	m, _ = aceStartWith(t, m, tea.KeyPressMsg{Code: 'a', Text: "a"})
+	view := ansi.Strip(m.listPanel.View())
+	if strings.Contains(view, "[a]") {
+		t.Fatalf("bare a must never be a label, view:\n%s", view)
+	}
+	before, _ := m.listPanel.SelectedList()
+	m = deliver2(t, m, tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	if m.ace.active {
+		t.Fatal("ctrl+g must toggle ace off")
+	}
+	if strings.Contains(ansi.Strip(m.listPanel.View()), "[") {
+		t.Fatal("labels not cleared after toggle-off")
+	}
+	if after, _ := m.listPanel.SelectedList(); after.ID != before.ID {
+		t.Fatalf("toggle-off changed selection: %q -> %q", before.ID, after.ID)
+	}
+
+	// Same trigger toggles off too.
+	m, _ = aceStartWith(t, m, tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m = deliver2(t, m, tea.KeyPressMsg{Code: 'a', Text: "a"})
+	if m.ace.active {
+		t.Fatal("a must toggle ace off while active")
+	}
+
+	// Tiny alphabet: three targets with "as" produce aa/as/sa; toggling off
+	// after a partial prefix must not select anything.
+	tiny := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), "as"), -1)
+	tiny = deliver2(t, tiny, tea.WindowSizeMsg{Width: 120, Height: 32})
+	tiny = deliver2(t, tiny, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
+		{ID: "l1", Title: "One", Kind: reminders.ListNormal},
+		{ID: "l2", Title: "Two", Kind: reminders.ListNormal},
+		{ID: "l3", Title: "Three", Kind: reminders.ListNormal},
+	}})
+	tiny.selectedList = &reminders.ReminderList{ID: "l1", Title: "One", Kind: reminders.ListNormal}
+	tiny, _ = aceStart(t, tiny)
+	tv := ansi.Strip(tiny.listPanel.View())
+	for _, label := range []string{"[aa]", "[as]", "[sa]"} {
+		if !strings.Contains(tv, label) {
+			t.Fatalf("missing label %s, view:\n%s", label, tv)
+		}
+	}
+	tiny = deliver2(t, tiny, tea.KeyPressMsg{Code: 'a', Text: "a"})
+	if tiny.ace.prefix != "a" {
+		t.Fatalf("expected prefix a, got %q", tiny.ace.prefix)
+	}
+	tiny = deliver2(t, tiny, tea.KeyPressMsg{Code: 'z', Text: "z"})
+	if tiny.ace.active {
+		t.Fatal("trigger must toggle ace off after a prefix")
+	}
+	if list, _ := tiny.listPanel.SelectedList(); list.ID != "l1" {
+		t.Fatalf("toggle after prefix must not select, got %q", list.ID)
+	}
+}
+
+// aceStartWith enters ace mode through an arbitrary configured trigger key.
+func aceStartWith(t *testing.T, m Model, key tea.KeyPressMsg) (Model, tea.Cmd) {
+	t.Helper()
+	next, cmd := deliver(t, m, key)
+	if !next.ace.active {
+		t.Fatal("trigger key did not enter ace mode")
+	}
+	return next, cmd
+}
+
+// TestAceTimeoutGenerations verifies expiry behaves as a one-shot timer per
+// activation with stale messages ignored.
+func TestAceTimeoutGenerations(t *testing.T) {
+	build := func(t *testing.T, seconds int64) Model {
+		t.Helper()
+		m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), seconds)
+		m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
+		m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
+			{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
+			{ID: "query", Title: "Query", Kind: reminders.ListNormal},
+		}})
+		m.selectedList = &reminders.ReminderList{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal}
+		return m
+	}
+
+	t.Run("matching generation expires", func(t *testing.T) {
+		m := build(t, 2)
+		m, cmd := aceStart(t, m)
+		if cmd == nil {
+			t.Fatal("positive timeout must return an expiry command")
+		}
+		gen := m.aceGeneration
+		m = deliver2(t, m, aceTimeoutMsg{generation: gen})
+		if m.ace.active {
+			t.Fatal("matching timeout must exit ace")
+		}
+	})
+
+	t.Run("stale generation after re-entry ignored", func(t *testing.T) {
+		m := build(t, 2)
+		m, _ = aceStart(t, m)
+		stale := m.aceGeneration
+		m = deliver2(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+		if m.ace.active {
+			t.Fatal("esc must exit ace")
+		}
+		m, _ = aceStart(t, m)
+		if m.aceGeneration == stale {
+			t.Fatal("generation must advance on re-entry")
+		}
+		m = deliver2(t, m, aceTimeoutMsg{generation: stale})
+		if !m.ace.active {
+			t.Fatal("stale timeout must not cancel the new snapshot")
+		}
+		m = deliver2(t, m, aceTimeoutMsg{generation: m.aceGeneration})
+		if m.ace.active {
+			t.Fatal("matching timeout must exit ace")
+		}
+	})
+
+	t.Run("zero expires immediately without stale activation", func(t *testing.T) {
+		m := build(t, 0)
+		m, cmd := aceStart(t, m)
+		if cmd == nil {
+			t.Fatal("zero timeout must still schedule the expiry command")
+		}
+		m = deliver2(t, m, aceTimeoutMsg{generation: m.aceGeneration})
+		if m.ace.active {
+			t.Fatal("zero timeout must leave normal mode")
+		}
+	})
+
+	t.Run("negative disables expiry but not invalidation", func(t *testing.T) {
+		m := build(t, -1)
+		m, cmd := aceStart(t, m)
+		if cmd != nil {
+			t.Fatal("disabled timeout must not schedule an expiry command")
+		}
+		if !m.ace.active {
+			t.Fatal("ace should be active")
+		}
+		m = deliver2(t, m, aceTimeoutMsg{generation: m.aceGeneration})
+		if !m.ace.active {
+			t.Fatal("with -1 no expiry message should ever cancel ace")
+		}
+		// Ordinary invalidating messages still exit.
+		m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
+		if m.ace.active {
+			t.Fatal("resize must still exit ace with -1")
+		}
+	})
 }

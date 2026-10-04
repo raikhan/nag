@@ -33,6 +33,7 @@ type Model struct {
 	client      *reminders.Client
 	keys        keybind.Map
 	aceAlphabet string
+	aceTimeout  time.Duration // negative disables the dedicated expiry timer
 
 	listPanel     listpanel.Model
 	reminderPanel reminderpanel.Model
@@ -59,9 +60,13 @@ type Model struct {
 	displayedListID  string
 	loadingReminders bool
 	ace              aceState
+	// aceGeneration counts ace snapshots; it lives outside aceState because
+	// aceState resets on exit and the generation must survive to invalidate
+	// stale expiry ticks.
+	aceGeneration uint64
 }
 
-func NewModel(client *reminders.Client, keys keybind.Map, aceAlphabet string) Model {
+func NewModel(client *reminders.Client, keys keybind.Map, aceAlphabet string, aceTimeoutSeconds int64) Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = styles.SpinnerStyle
@@ -73,6 +78,7 @@ func NewModel(client *reminders.Client, keys keybind.Map, aceAlphabet string) Mo
 		client:        client,
 		keys:          keys,
 		aceAlphabet:   aceAlphabet,
+		aceTimeout:    time.Duration(aceTimeoutSeconds) * time.Second,
 		listPanel:     lp,
 		reminderPanel: reminderpanel.New(50, 20),
 		statusBar:     statusbar.New(),
@@ -110,6 +116,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		isDark := msg.IsDark()
 		m.listPanel.SetDarkBackground(isDark)
 		m.reminderPanel.SetDarkBackground(isDark)
+		return m, nil
+
+	case aceTimeoutMsg:
+		// Expiry fires once per activation and only cancels the snapshot that
+		// scheduled it; stale timers after cancel/re-entry, and any message
+		// when no timer is configured, are ignored.
+		if m.ace.active && m.aceTimeout >= 0 && msg.generation == m.aceGeneration {
+			m.aceExit()
+		}
 		return m, nil
 
 	case tea.WindowSizeMsg:
@@ -386,14 +401,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if keyMsg, ok := msg.(tea.KeyPressMsg); ok && !filtering {
 		// Active ace mode captures keys before every other shortcut.
 		if m.ace.active {
-			return m, m.aceHandleKey(keyMsg)
+			cmd := m.aceHandleKey(keyMsg)
+			return m, cmd
 		}
 		switch {
 		case key.Matches(keyMsg, m.keys.Bind("global", "quit")):
 			return m, tea.Quit
 		case key.Matches(keyMsg, m.keys.Bind("global", "ace_jump")):
-			m.aceStart()
-			return m, nil
+			cmd := m.aceStart()
+			return m, cmd
 		case key.Matches(keyMsg, m.keys.Bind("global", "help")):
 			m.helpOverlay.Toggle()
 			return m, nil

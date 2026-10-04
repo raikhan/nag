@@ -71,6 +71,8 @@ func scopeActions(scope string) []string {
 		return []string{"down", "up", "confirm", "cancel", "toggle"}
 	case "dialog":
 		return []string{"submit", "cancel", "next_field", "previous_field"}
+	case "field":
+		return []string{"confirm", "cancel", "next_field", "previous_field"}
 	case "choice_field":
 		return []string{"open"}
 	case "confirm":

@@ -214,6 +214,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.query, cmd = m.query.Update(msg)
 		m.applyQuery()
 		return m, cmd
+	case tea.PasteMsg:
+		// Pasted text is query text, exactly once.
+		var cmd tea.Cmd
+		m.query, cmd = m.query.Update(msg)
+		m.applyQuery()
+		return m, cmd
 	}
 	return m, nil
 }

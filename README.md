@@ -89,6 +89,21 @@ defaults, and `nag help` to list the bindings currently in effect.
 | `c` | Toggle show completed |
 | `r` | Refresh |
 
+### Reminder form
+
+The create/edit form keeps all six fields visible beside the active editor.
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `j` | Next field |
+| `Shift-Tab` / `k` | Previous field |
+| `t` `n` `d` `i` `p` `r` | Jump to Title / Notes / Date / Time / Priority / Recurrence and edit it |
+| `Enter` | Edit selected field / finish the open field |
+| `Ctrl-S` | Save the form |
+| `Esc` | Cancel the open field, then the form |
+
+Single-field dialogs (create list, confirmations) still submit with `Enter`.
+
 ### Dialogs
 
 | Key | Action |
@@ -106,12 +121,16 @@ defaults, and `nag help` to list the bindings currently in effect.
 | `Esc` | Close dialog / overlay |
 | `q` / `Ctrl-C` | Quit |
 
-### Date entry (due date)
+### Date and time entry
 
-Org-mode style: `today`, `tom`, `tue`, `eow`, `eom`, `+2d`, `+7w`, `+2tue`,
-`sep 15`, `2026-10-31 15:00`, … A keyboard calendar (Ctrl-h/J/K/L moves the
-date by a day/week) and live autocomplete appear while the due field is
-focused.
+Date and Time are separate fields. The Date field takes Org-mode style civil
+dates: `today`, `tom`, `tue`, `eow`, `eom`, `+2d`, `+7w`, `+2tue`,
+`sep 15`, `2026-10-04`, … A keyboard calendar (Ctrl-h/J/K/L moves the date by
+a day/week) and live autocomplete (Ctrl-Y completes, Ctrl-N/P cycle) appear
+while the date field is focused.
+
+The Time field takes clock times: `6p`, `6pm`, `14:13`, `1413`, `615p`,
+`12am`, `12pm`, `9:05`, … A blank time with a date means 09:00 local.
 
 ### Recurrence
 

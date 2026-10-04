@@ -358,10 +358,15 @@ func (m *RecurrenceModel) Hide() {
 
 func (m RecurrenceModel) Visible() bool { return m.visible }
 
+// SetSize accepts pane dimensions from the containing form; the whole
+// terminal is never used here.
 func (m *RecurrenceModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height
-	m.endPicker.SetSize(width-4, height/3)
+	m.endPicker.SetSize(width, height)
+	if m.selector.Visible() {
+		m.selector.SetSize(width, height)
+	}
 }
 
 // draftRules composes the eventkit rule from the current draft.
@@ -856,8 +861,9 @@ func (m RecurrenceModel) endPickerValue() time.Time {
 	return *t
 }
 
-// apply validates the draft and emits RecurrenceSubmitMsg.
-func (m RecurrenceModel) apply() tea.Cmd {
+// apply validates the draft and emits RecurrenceSubmitMsg. The pointer
+// receiver keeps validation error and focus changes visible in the pane.
+func (m *RecurrenceModel) apply() tea.Cmd {
 	if n := m.interval(); n < 1 {
 		m.errText = "Interval must be at least 1"
 		m.focusField()
@@ -962,9 +968,6 @@ func (m RecurrenceModel) Update(msg tea.Msg) (RecurrenceModel, tea.Cmd) {
 			}
 			return m, cmd
 		case key.Matches(msg, m.keys.Bind("dialog", "next_field")):
-			if m.endMode == endOnDate && m.endPicker.Focused() && m.endPicker.TryAcceptSuggestion() {
-				return m, nil
-			}
 			m.focusIndex = (m.focusIndex + 1) % len(m.fields())
 			m.focusField()
 			return m, nil
@@ -1044,10 +1047,14 @@ func isEditorChoiceField(kind fieldKind) bool {
 	return false
 }
 
-// View renders the editor form replacing the outer form content.
+// View renders unframed pane content for the containing form's right pane.
+// When the inner chooser is open its content fills the same pane.
 func (m RecurrenceModel) View() string {
 	if !m.visible {
 		return ""
+	}
+	if m.selector.Visible() {
+		return m.selector.View()
 	}
 	title := "Custom Repeat"
 	if m.banner != "" {
@@ -1071,14 +1078,36 @@ func (m RecurrenceModel) View() string {
 			b.WriteString(m.endPicker.View())
 			b.WriteString("\n")
 		}
+		if m.errText != "" && i == m.focusIndex {
+			b.WriteString(lipgloss.NewStyle().Foreground(styles.Red).Render(m.errText))
+			b.WriteString("\n")
+		}
 	}
-	if m.errText != "" {
-		b.WriteString("\n" + lipgloss.NewStyle().Foreground(styles.Red).Render(m.errText) + "\n")
+	footer := keybind.ShortKeys(m.keys.Aliases("dialog", "submit")) + ": apply  " +
+		keybind.ShortKeys(m.keys.Aliases("dialog", "next_field")) + ": next  " +
+		keybind.ShortKeys(m.keys.Aliases("dialog", "cancel")) + ": cancel"
+	b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).Render(footer))
+	return b.String()
+}
+
+// FocusLine returns the zero-based line of the active field (with its error)
+// within the unframed View output.
+func (m RecurrenceModel) FocusLine() int {
+	if !m.visible || m.selector.Visible() {
+		return 0
 	}
-	b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).Render(
-		"Enter: open/apply  Ctrl+S: apply  Tab: next  Esc: cancel"))
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		dialogBoxStyle(m.width).Render(b.String()))
+	line := 2 // title + blank
+	fs := m.fields()
+	for i, f := range fs {
+		if i == m.focusIndex {
+			return line
+		}
+		line++
+		if f == fEndValue && m.endMode == endOnDate && i == m.focusIndex {
+			line += strings.Count(m.endPicker.View(), "\n") + 1
+		}
+	}
+	return 0
 }
 
 func fieldPrompt(f fieldKind) string {

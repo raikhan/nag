@@ -1,6 +1,8 @@
 // Package dateentry parses Org-style date expressions for due-date entry.
-// Parse is pure: now is the captured wall clock and base is the editing
-// anchor (the original due timestamp when editing, otherwise today at 09:00).
+// Parse is pure and date-only: now is the captured wall clock and base is
+// the editing anchor (the original due date when editing, otherwise today).
+// Both are normalized into now.Location() at local midnight before date
+// inference; times are entered separately through internal/timeentry.
 package dateentry
 
 import (
@@ -12,12 +14,14 @@ import (
 )
 
 var (
-	offsetRe     = regexp.MustCompile(`^([+-])([+-]?)(\d+)(h|d|w|m|y)?$`)
+	offsetRe     = regexp.MustCompile(`^([+-])([+-]?)(\d+)(d|w|m|y)?$`)
+	hourOffsetRe = regexp.MustCompile(`^([+-])([+-]?)(\d+)h$`)
 	nthWeekdayRe = regexp.MustCompile(`^([+-])([+-]?)(\d+)(sun|mon|tue|wed|thu|fri|sat)$`)
 	isoWeekRe    = regexp.MustCompile(`^(w\d{1,2}|\d{4}[ -]?w\d{1,2}(?:[ -]?[1-7])?|\d{4}-w\d{2}-[1-7])$`)
 	ymdRe        = regexp.MustCompile(`^(\d{4})(?:[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)?$`)
 	amdRe        = regexp.MustCompile(`^(\d{1,2})[-/.](\d{1,2})(?:[-/.](\d{2}|\d{4}))?$`)
 	timeRe       = regexp.MustCompile(`^(.*?)[ T](\d{1,2}):(\d{2})$`)
+	timeOnlyRe   = regexp.MustCompile(`^\d{1,2}:\d{2}$`)
 	dayRe        = regexp.MustCompile(`^(\d{1,2})$`)
 	mdRe         = regexp.MustCompile(`^(\d{1,2})[-/.](\d{1,2})$`)
 )
@@ -53,9 +57,11 @@ var singletons = map[string]int{ // offset in days from today
 	"yesterday": -1, "yes": -1,
 }
 
-// Parse resolves one due timestamp from an Org-style expression. An empty
-// expression means "no due date" (nil, nil). Invalid nonempty expressions
-// return an error, never nil.
+// Parse resolves one civil date from an Org-style expression, returned as a
+// local-midnight time. An empty expression means "no date" (nil, nil).
+// Invalid nonempty expressions return an error, never nil. Time-of-day
+// input ("14:13", "today 09:00", "+2h") is rejected with a pointer to the
+// separate Time field.
 func Parse(raw string, now, base time.Time) (*time.Time, error) {
 	s := strings.TrimSpace(raw)
 	if s == "" {
@@ -63,28 +69,24 @@ func Parse(raw string, now, base time.Time) (*time.Time, error) {
 	}
 	lower := strings.ToLower(s)
 
+	// Normalize into now.Location() at local midnight so date inference is
+	// purely civil.
+	loc := now.Location()
+	now = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	base = time.Date(base.Year(), base.Month(), base.Day(), 0, 0, 0, 0, loc)
+
 	if strings.Contains(lower, "--") && !offsetRe.MatchString(lower) {
 		return nil, fmt.Errorf("date ranges are not supported: %q", s)
 	}
 
-	// Optional trailing 24-hour time.
-	hour, minute := -1, -1
-	if m := timeRe.FindStringSubmatch(lower); m != nil && strings.TrimSpace(m[1]) != "" {
-		h, _ := strconv.Atoi(m[2])
-		mi, _ := strconv.Atoi(m[3])
-		if h > 23 || mi > 59 {
-			return nil, fmt.Errorf("invalid time %q", s)
-		}
-		hour, minute = h, mi
-		lower = strings.TrimSpace(m[1])
+	// Times belong in the Time field now.
+	if timeOnlyRe.MatchString(lower) || hourOffsetRe.MatchString(lower) || hasTrailingTime(lower) {
+		return nil, fmt.Errorf("Enter time in the Time field")
 	}
 
 	t, err := parseDate(lower, now, base)
 	if err != nil {
 		return nil, err
-	}
-	if hour >= 0 {
-		t = time.Date(t.Year(), t.Month(), t.Day(), hour, minute, 0, 0, t.Location())
 	}
 	if t.Year() < 1 || t.Year() > 9999 {
 		return nil, fmt.Errorf("date outside years 1..9999: %q", s)
@@ -92,12 +94,18 @@ func Parse(raw string, now, base time.Time) (*time.Time, error) {
 	return &t, nil
 }
 
+// hasTrailingTime reports whether s combines a date with a trailing clock
+// time ("2026-10-04 09:00", "today 9:00").
+func hasTrailingTime(s string) bool {
+	m := timeRe.FindStringSubmatch(s)
+	return m != nil && strings.TrimSpace(m[1]) != ""
+}
+
 func parseDate(s string, now, base time.Time) (time.Time, error) {
-	clockHour, clockMin, _ := base.Clock() // new forms: today at 09:00; edits: original time
 	day := func(y int, m time.Month, d int) time.Time {
-		return time.Date(y, m, d, clockHour, clockMin, 0, 0, base.Location())
+		return time.Date(y, m, d, 0, 0, 0, 0, base.Location())
 	}
-	today := time.Date(now.Year(), now.Month(), now.Day(), clockHour, clockMin, 0, 0, base.Location())
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, base.Location())
 
 	if n, ok := singletons[s]; ok {
 		return day(today.Year(), today.Month(), today.Day()+n), nil
@@ -126,32 +134,22 @@ func parseDate(s string, now, base time.Time) (time.Time, error) {
 			n = -n
 		}
 		single := m[2] == ""
-		var t time.Time
-		if m[4] == "h" {
-			anchor := now
-			if !single {
-				anchor = base
-			}
-			t = anchor.Add(time.Duration(n) * time.Hour)
-		} else {
-			anchor := today
-			if !single {
-				anchor = base
-			}
-			y, mo, dd := anchor.Year(), anchor.Month(), anchor.Day()
-			switch m[4] {
-			case "", "d":
-				dd += n
-			case "w":
-				dd += n * 7
-			case "m":
-				y, mo, dd = addMonthsClamped(y, mo, anchor.Day(), n)
-			case "y":
-				y, mo, dd = addMonthsClamped(y, mo, anchor.Day(), n*12)
-			}
-			t = day(y, mo, dd)
+		anchor := today
+		if !single {
+			anchor = base
 		}
-		return t, nil
+		y, mo, dd := anchor.Year(), anchor.Month(), anchor.Day()
+		switch m[4] {
+		case "", "d":
+			dd += n
+		case "w":
+			dd += n * 7
+		case "m":
+			y, mo, dd = addMonthsClamped(y, mo, anchor.Day(), n)
+		case "y":
+			y, mo, dd = addMonthsClamped(y, mo, anchor.Day(), n*12)
+		}
+		return day(y, mo, dd), nil
 	}
 
 	if m := nthWeekdayRe.FindStringSubmatch(s); m != nil {

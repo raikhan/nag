@@ -1,17 +1,21 @@
 package dialog
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/BRO3886/go-eventkit"
 
+	"github.com/oronbz/nag/internal/dateentry"
 	"github.com/oronbz/nag/internal/keybind"
 	"github.com/oronbz/nag/internal/reminders"
+	"github.com/oronbz/nag/internal/timeentry"
 	"github.com/oronbz/nag/internal/ui/styles"
 )
 
@@ -23,8 +27,6 @@ type EditSubmitMsg struct {
 	ID    string
 	Input reminders.UpdateReminderInput
 }
-
-const fieldCount = 5 // title, notes, due date, priority, recurrence
 
 // applyInputStyles restores V1 terminal-default input rendering: a teal
 // prompt and unstyled text, applied to both focus states.
@@ -47,10 +49,35 @@ const (
 	chooserRecurrence
 )
 
+// formField identifies one of the six main form rows.
+type formField int
+
+const (
+	fieldTitle formField = iota
+	fieldNotes
+	fieldDate
+	fieldTime
+	fieldPriority
+	fieldRecurrence
+)
+
+const formFieldCount = 6
+
+const noField formField = -1
+
+// formMode distinguishes browsing the six rows from editing one field.
+type formMode int
+
+const (
+	formBrowsing formMode = iota
+	formEditing
+)
+
 type CreateModel struct {
 	keys        keybind.Map
 	titleInput  textinput.Model
 	notesInput  textinput.Model
+	timeInput   textinput.Model
 	picker      datepickerModel
 	priority    int
 	recurrence  []eventkit.RecurrenceRule
@@ -58,22 +85,45 @@ type CreateModel struct {
 	purpose     chooserPurpose
 	recurrenceE RecurrenceModel
 
-	// dirty tracking
-	dueText           string // picker text at open; empty means no due date
-	dueTouched        bool
-	origRules         []eventkit.RecurrenceRule
-	recurrenceTouched bool
+	mode     formMode
+	selected formField
+	active   formField
+	// choiceOwner retains which outer field owns the open selector or
+	// custom editor across its close-before-result interval; input is
+	// ignored while a result is pending.
+	choiceOwner formField
+	choiceOpen  bool
+
+	// Committed Date/Time drafts and their parsed caches.
+	committedDate string // date text or ""
+	committedTime string // raw time text or ""
+	timeClock     *timeentry.Clock
+	// timeDraft is the live parse of the open Time editor.
+	timeDraft    *timeentry.Clock
+	timeDraftErr string
+	// editSnapshot holds the value an open simple editor started with.
+	editSnapshot string
+
+	// Original due state at open, for patch comparison.
+	origDue   *time.Time
+	origRules []eventkit.RecurrenceRule
 
 	now  time.Time
 	base time.Time
 
-	focusIndex int
-	visible    bool
-	listName   string
-	editingID  string
-	width      int
-	height     int
-	errText    string
+	visible   bool
+	listName  string
+	editingID string
+	width     int
+	height    int
+	errText   string
+
+	// Cached pane state: rebuilt after every state change, never per frame.
+	viewport   viewport.Model
+	cachedView string
+	tooSmall   bool
+	paneW      int
+	paneH      int
 }
 
 func NewCreate() CreateModel {
@@ -91,10 +141,21 @@ func NewCreate() CreateModel {
 	ni.Prompt = "Notes:    "
 	applyInputStyles(&ni)
 
+	tmi := textinput.New()
+	tmi.Placeholder = "e.g. 6pm, 14:13"
+	tmi.CharLimit = 32
+	tmi.SetWidth(20)
+	tmi.Prompt = "Time:     "
+	applyInputStyles(&tmi)
+
 	return CreateModel{
 		titleInput: ti,
 		notesInput: ni,
+		timeInput:  tmi,
 		priority:   reminders.PriorityNone,
+		active:     noField,
+		selected:   fieldTitle,
+		viewport:   viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
 	}
 }
 
@@ -103,75 +164,119 @@ func (m *CreateModel) SetKeys(keys keybind.Map) {
 	m.keys = keys
 	m.selector = newSelector(keys)
 	m.recurrenceE = NewRecurrence(keys)
-	m.picker = datePickerNew(time.Now(), todayNine(time.Now()), keys)
-	projectTextInputKeys(&m.titleInput, keys)
-	projectTextInputKeys(&m.notesInput, keys)
+	m.picker = datePickerNew(time.Now(), midnightOf(time.Now()), keys)
+	projectTextInputKeys(&m.titleInput, keys, "field")
+	projectTextInputKeys(&m.notesInput, keys, "field")
+	projectTextInputKeys(&m.timeInput, keys, "field")
 }
 
+func midnightOf(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+// Show opens the create form for a list.
 func (m *CreateModel) Show(listName string) {
-	m.now = time.Now()
-	m.base = todayNine(m.now)
+	m.showAt(listName, time.Now())
+}
+
+func (m *CreateModel) showAt(listName string, now time.Time) {
+	m.now = now
+	m.base = midnightOf(now)
 	m.picker = datePickerNew(m.now, m.base, m.keys)
-	m.picker.SetSize(m.width, m.height)
 	m.visible = true
 	m.listName = listName
 	m.editingID = ""
-	m.focusIndex = 0
-	m.errText = ""
-	m.titleInput.SetValue("")
-	m.notesInput.SetValue("")
-	m.priority = reminders.PriorityNone
-	m.recurrence = nil
-	m.origRules = nil
-	m.dueText = ""
-	m.dueTouched = false
-	m.recurrenceTouched = false
-	m.recurrenceE.Hide()
-	m.focusField(0)
+	m.resetFormState()
 }
 
+// ShowEdit opens the edit form prefilled from an existing reminder. The
+// imported due timestamp is converted to the captured local location before
+// prefilling Date and Time.
 func (m *CreateModel) ShowEdit(r reminders.Reminder) {
-	m.now = time.Now()
-	m.base = todayNine(m.now)
+	m.showEditAt(r, time.Now())
+}
+
+func (m *CreateModel) showEditAt(r reminders.Reminder, now time.Time) {
+	m.now = now
+	loc := now.Location()
 	if r.DueDate != nil {
-		m.base = *r.DueDate
+		m.base = midnightOf(r.DueDate.In(loc))
+	} else {
+		m.base = midnightOf(now)
 	}
 	m.picker = datePickerNew(m.now, m.base, m.keys)
-	m.picker.SetSize(m.width, m.height)
 	m.visible = true
 	m.editingID = r.ID
 	m.listName = ""
-	m.focusIndex = 0
-	m.errText = ""
+	m.resetFormState()
 
 	m.titleInput.SetValue(r.Title)
 	m.notesInput.SetValue(r.Notes)
 
 	if r.DueDate != nil {
-		m.picker.SetValue(r.DueDate.Local().Format("2006-01-02 15:04"))
-	} else {
-		m.picker.SetValue("")
+		local := r.DueDate.In(loc)
+		dateText := local.Format("2006-01-02")
+		clock := timeentry.Clock{Hour: local.Hour(), Minute: local.Minute()}
+		timeText := clock.String()
+		m.picker.SetValue(dateText)
+		m.timeInput.SetValue(timeText)
+		m.committedDate = dateText
+		m.committedTime = timeText
+		c := clock
+		m.timeClock = &c
+		due := local
+		m.origDue = &due
 	}
-	m.dueText = m.picker.Value()
-	m.dueTouched = false
-
 	m.priority = r.Priority
-	m.origRules = copyRules(r.RecurrenceRules)
-	m.recurrence = copyRules(r.RecurrenceRules)
-	m.recurrenceTouched = false
-	m.recurrenceE.Hide()
-	m.focusField(0)
+	m.setOrigRules(r.RecurrenceRules)
+	m.rebuildPane()
 }
 
-func todayNine(now time.Time) time.Time {
-	return time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, now.Location())
+// resetFormState clears interaction state shared by Show and ShowEdit.
+func (m *CreateModel) resetFormState() {
+	m.mode = formBrowsing
+	m.selected = fieldTitle
+	m.active = noField
+	m.choiceOwner = noField
+	m.choiceOpen = false
+	m.purpose = chooserNone
+	m.errText = ""
+	m.priority = reminders.PriorityNone
+	m.recurrence = nil
+	m.origRules = nil
+	m.committedDate = ""
+	m.committedTime = ""
+	m.timeClock = nil
+	m.timeDraft = nil
+	m.timeDraftErr = ""
+	m.editSnapshot = ""
+	m.origDue = nil
+	m.titleInput.SetValue("")
+	m.notesInput.SetValue("")
+	m.timeInput.SetValue("")
+	m.picker.SetValue("")
+	m.blurAll()
+	m.recurrenceE.Hide()
+	m.selector.Close()
+	m.rebuildPane()
+}
+
+// origRules snapshot for recurrence patch comparison (set by ShowEdit).
+func (m *CreateModel) setOrigRules(rules []eventkit.RecurrenceRule) {
+	m.origRules = copyRules(rules)
+	m.recurrence = copyRules(rules)
+}
+
+func (m *CreateModel) blurAll() {
+	m.titleInput.Blur()
+	m.notesInput.Blur()
+	m.timeInput.Blur()
+	m.picker.Blur()
 }
 
 func (m *CreateModel) Hide() {
 	m.visible = false
-	m.titleInput.Blur()
-	m.notesInput.Blur()
-	m.picker.Blur()
+	m.blurAll()
 }
 
 func (m CreateModel) Visible() bool {
@@ -185,23 +290,222 @@ func (m CreateModel) isEditing() bool {
 func (m *CreateModel) SetSize(width, height int) {
 	m.width = width
 	m.height = height
-	m.picker.SetSize(width-4, height/3)
-	m.selector.SetSize(width-8, min(12, height/2))
-	m.recurrenceE.SetSize(width, height)
+	m.rebuildPane()
 }
 
-func (m *CreateModel) focusField(index int) {
-	m.titleInput.Blur()
-	m.notesInput.Blur()
-	m.picker.Blur()
-	switch index {
-	case 0:
+// isSimpleField reports whether the field is edited inline (text, date or
+// time editor) rather than through the shared selector.
+func isSimpleField(f formField) bool {
+	return f == fieldTitle || f == fieldNotes || f == fieldDate || f == fieldTime
+}
+
+// openField begins editing a field. Choice fields open the shared selector.
+func (m *CreateModel) openField(f formField) {
+	m.mode = formEditing
+	m.active = f
+	m.blurAll()
+	switch f {
+	case fieldTitle:
+		m.editSnapshot = m.titleInput.Value()
 		m.titleInput.Focus()
-	case 1:
+	case fieldNotes:
+		m.editSnapshot = m.notesInput.Value()
 		m.notesInput.Focus()
-	case 2:
+	case fieldDate:
+		m.editSnapshot = m.picker.Value()
 		m.picker.Focus()
+	case fieldTime:
+		m.editSnapshot = m.timeInput.Value()
+		m.timeInput.Focus()
+		m.updateTimeDraft()
+	case fieldPriority:
+		m.choiceOwner = fieldPriority
+		m.choiceOpen = true
+		m.openOuterChooser(fieldPriority, "")
+	case fieldRecurrence:
+		m.choiceOwner = fieldRecurrence
+		m.choiceOpen = true
+		m.openOuterChooser(fieldRecurrence, "")
 	}
+}
+
+// closeField leaves editing and returns to browsing the same row.
+func (m *CreateModel) closeField() {
+	m.mode = formBrowsing
+	m.selected = m.active
+	m.active = noField
+	m.blurAll()
+}
+
+// cancelField restores the opening value and returns to browsing.
+func (m *CreateModel) cancelField() {
+	switch m.active {
+	case fieldTitle:
+		m.titleInput.SetValue(m.editSnapshot)
+	case fieldNotes:
+		m.notesInput.SetValue(m.editSnapshot)
+	case fieldDate:
+		m.picker.SetValue(m.editSnapshot)
+	case fieldTime:
+		m.timeInput.SetValue(m.editSnapshot)
+	}
+	m.errText = ""
+	m.closeField()
+}
+
+// commitField validates and commits one simple field. It reports whether the
+// commit succeeded; on failure the error text is set and the field stays
+// open.
+func (m *CreateModel) commitField(f formField) bool {
+	switch f {
+	case fieldTitle, fieldNotes:
+		m.errText = ""
+		return true
+	case fieldDate:
+		raw := strings.TrimSpace(m.picker.Value())
+		if raw == "" {
+			m.committedDate = ""
+			// Clearing the date also clears the time draft.
+			m.committedTime = ""
+			m.timeClock = nil
+			m.timeInput.SetValue("")
+			m.timeDraft = nil
+			m.timeDraftErr = ""
+			m.errText = ""
+			return true
+		}
+		if _, err := dateentry.Parse(raw, m.now, m.base); err != nil {
+			m.errText = err.Error()
+			return false
+		}
+		m.committedDate = raw
+		m.errText = ""
+		return true
+	case fieldTime:
+		return m.commitTime(m.timeInput.Value())
+	}
+	return true
+}
+
+func (m *CreateModel) commitTime(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	clock, present, err := timeentry.Parse(trimmed)
+	if err != nil {
+		m.errText = err.Error()
+		return false
+	}
+	m.committedTime = trimmed
+	if present {
+		c := clock
+		m.timeClock = &c
+	} else {
+		m.timeClock = nil
+	}
+	m.errText = ""
+	return true
+}
+
+// updateTimeDraft refreshes the live Time editor parse; called only when the
+// input value changed.
+func (m *CreateModel) updateTimeDraft() {
+	raw := m.timeInput.Value()
+	m.timeDraft = nil
+	m.timeDraftErr = ""
+	if strings.TrimSpace(raw) == "" {
+		return
+	}
+	clock, present, err := timeentry.Parse(strings.TrimSpace(raw))
+	switch {
+	case err != nil:
+		m.timeDraftErr = err.Error()
+	case present:
+		c := clock
+		m.timeDraft = &c
+	}
+}
+
+// composeDue builds the final due timestamp exactly once from the committed
+// civil date plus clock in the captured local location. Blank time with a
+// date means 09:00 local. A nonexistent DST clock is rejected.
+func (m *CreateModel) composeDue() (*time.Time, error) {
+	if m.committedDate == "" {
+		return nil, nil
+	}
+	day, err := dateentry.Parse(m.committedDate, m.now, m.base)
+	if err != nil {
+		return nil, err
+	}
+	hour, minute := 9, 0
+	if m.committedTime != "" {
+		clock, present, err := timeentry.Parse(m.committedTime)
+		if err != nil {
+			return nil, err
+		}
+		if present {
+			hour, minute = clock.Hour, clock.Minute
+		}
+	}
+	loc := m.now.Location()
+	t := time.Date(day.Year(), day.Month(), day.Day(), hour, minute, 0, 0, loc)
+	if t.Year() != day.Year() || t.Month() != day.Month() || t.Day() != day.Day() ||
+		t.Hour() != hour || t.Minute() != minute {
+		return nil, fmt.Errorf("Time does not exist on that date in the local time zone")
+	}
+	return &t, nil
+}
+
+// dueStateChanged reports whether the committed date/time differs from the
+// original civil values.
+func (m *CreateModel) dueStateChanged() bool {
+	switch {
+	case m.origDue == nil && m.committedDate == "":
+		return false
+	case m.origDue == nil:
+		return true
+	case m.committedDate == "":
+		return true
+	}
+	composed, err := m.composeDue()
+	return err != nil || composed == nil || !composed.Equal(*m.origDue)
+}
+
+// duePatch converts the committed state into a due patch: a composed
+// timestamp, a clear request, or nothing when unchanged.
+func (m *CreateModel) duePatch() (*time.Time, bool, error) {
+	composed, err := m.composeDue()
+	if err != nil {
+		return nil, false, err
+	}
+	switch {
+	case m.origDue == nil && composed == nil:
+		return nil, false, nil
+	case m.origDue == nil:
+		return composed, false, nil
+	case composed == nil:
+		return nil, true, nil
+	case composed.Equal(*m.origDue):
+		return nil, false, nil
+	default:
+		return composed, false, nil
+	}
+}
+
+// anchorDue is the custom editor anchor: the composed due when present, the
+// editing base otherwise.
+func (m *CreateModel) anchorDue() time.Time {
+	if due, err := m.composeDue(); err == nil && due != nil {
+		return *due
+	}
+	return m.base
+}
+
+// zoneAbbrev renders the local zone abbreviation of the selected due
+// timestamp, or of the captured clock when no date is present.
+func (m CreateModel) zoneAbbrev() string {
+	if due, err := m.composeDue(); err == nil && due != nil {
+		return due.Format("MST")
+	}
+	return m.now.Format("MST")
 }
 
 // recurrenceLabel renders the committed recurrence choice.
@@ -255,46 +559,139 @@ func priorityID(p int) string {
 	}
 }
 
+// jumpHint renders the first configured alias of a jump action in brackets,
+// or empty spaces when the action is disabled.
+func (m CreateModel) jumpHint(action string) string {
+	aliases := m.keys.Aliases("form", action)
+	if len(aliases) == 0 {
+		return "    "
+	}
+	return "[" + keybind.ShortKey(aliases[0]) + "] "
+}
+
+func (m CreateModel) fieldLabel(f formField) string {
+	switch f {
+	case fieldTitle:
+		return "Title"
+	case fieldNotes:
+		return "Notes"
+	case fieldDate:
+		return "Date"
+	case fieldTime:
+		return "Time"
+	case fieldPriority:
+		return "Priority"
+	default:
+		return "Recurrence"
+	}
+}
+
+func (m CreateModel) jumpAction(f formField) string {
+	switch f {
+	case fieldTitle:
+		return "jump_title"
+	case fieldNotes:
+		return "jump_notes"
+	case fieldDate:
+		return "jump_date"
+	case fieldTime:
+		return "jump_time"
+	case fieldPriority:
+		return "jump_priority"
+	default:
+		return "jump_recurrence"
+	}
+}
+
+// summaryValue renders the committed value of a field, with a draft preview
+// for the active one.
+func (m CreateModel) summaryValue(f formField) string {
+	switch f {
+	case fieldTitle:
+		return strings.TrimSpace(m.titleInput.Value())
+	case fieldNotes:
+		return strings.TrimSpace(m.notesInput.Value())
+	case fieldDate:
+		if m.mode == formEditing && m.active == fieldDate {
+			if v := strings.TrimSpace(m.picker.Value()); v != "" {
+				return v
+			}
+			return "None"
+		}
+		if m.committedDate != "" {
+			return m.committedDate
+		}
+		return "None"
+	case fieldTime:
+		clock := m.timeClock
+		if m.mode == formEditing && m.active == fieldTime {
+			clock = m.timeDraft
+			if m.timeDraft != nil {
+				return m.timeDraft.String() + " " + m.zoneAbbrev()
+			}
+			if strings.TrimSpace(m.timeInput.Value()) != "" {
+				return strings.TrimSpace(m.timeInput.Value())
+			}
+			return "None"
+		}
+		if clock != nil {
+			return clock.String() + " " + m.zoneAbbrev()
+		}
+		return "None"
+	case fieldPriority:
+		return priorityLabel(m.priority)
+	default:
+		return recurrenceLabel(m.recurrence)
+	}
+}
+
+// summaryLines renders the six left-pane rows.
+func (m CreateModel) summaryLines() []string {
+	selectedStyle := lipgloss.NewStyle().Foreground(styles.Teal).Bold(true)
+	normalStyle := lipgloss.NewStyle()
+	lines := make([]string, 0, formFieldCount)
+	for f := formField(0); f < formFieldCount; f++ {
+		marker := "  "
+		style := normalStyle
+		if f == m.selected || (m.mode == formEditing && f == m.active) {
+			marker = "> "
+			style = selectedStyle
+		}
+		line := marker + m.jumpHint(m.jumpAction(f)) + fmt.Sprintf("%-11s", m.fieldLabel(f)) + m.summaryValue(f)
+		lines = append(lines, style.Render(line))
+	}
+	return lines
+}
+
 func (m CreateModel) Update(msg tea.Msg) (CreateModel, tea.Cmd) {
 	if !m.visible {
 		return m, nil
 	}
+	m2, cmd := m.update(msg)
+	m2.rebuildPane()
+	return m2, cmd
+}
 
-	// Inner custom-repeat editor first.
+func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
+	// Inner custom-repeat editor captures everything while visible.
 	if m.recurrenceE.Visible() {
 		var cmd tea.Cmd
 		m.recurrenceE, cmd = m.recurrenceE.Update(msg)
 		return m, cmd
 	}
 
-	// Editor results emitted after the editor closed itself.
+	// Result messages are consumed before visibility branches and only for
+	// the pending owner.
 	switch msg := msg.(type) {
 	case RecurrenceSubmitMsg:
 		m.recurrence = msg.Rules
-		m.recurrenceTouched = true
 		m.recurrenceE.Hide()
+		m.finishChoiceOwner()
 		return m, nil
 	case RecurrenceCancelMsg:
 		m.recurrenceE.Hide()
+		m.finishChoiceOwner()
 		return m, nil
-	}
-
-	// Outer chooser.
-	if m.selector.Visible() {
-		switch msg := msg.(type) {
-		case tea.KeyPressMsg:
-			var cmd tea.Cmd
-			m.selector, cmd = m.selector.Update(msg)
-			return m, cmd
-		case tea.PasteMsg:
-			var cmd tea.Cmd
-			m.selector, cmd = m.selector.Update(msg)
-			return m, cmd
-		}
-	}
-
-	// Chooser results consumed by this form only.
-	switch msg := msg.(type) {
 	case selectorSelectedMsg:
 		purpose := m.purpose
 		m.purpose = chooserNone
@@ -304,101 +701,156 @@ func (m CreateModel) Update(msg tea.Msg) (CreateModel, tea.Cmd) {
 			if len(msg.IDs) == 1 {
 				m.priority = priorityFromID(msg.IDs[0])
 			}
+			m.finishChoiceOwner()
 		case chooserRecurrence:
+			if len(msg.IDs) == 1 && msg.IDs[0] == "custom" {
+				// Switch into the custom editor; the owner stays retained
+				// until its Apply/Cancel result is consumed.
+				m.recurrenceE.Show(m.recurrence, m.now, m.anchorDue())
+				m.recurrenceE.SetSize(m.paneW, m.paneH)
+				return m, nil
+			}
 			if len(msg.IDs) == 1 {
-				if msg.IDs[0] == "custom" {
-					base := m.base
-					if due, err := m.picker.Resolve(); err == nil && due != nil {
-						base = *due
-					}
-					m.recurrenceE.Show(m.recurrence, m.now, base)
-				} else {
-					for _, p := range presets {
-						if p.id == msg.IDs[0] {
-							m.recurrence = p.build()
-							m.recurrenceTouched = true
-						}
+				for _, p := range presets {
+					if p.id == msg.IDs[0] {
+						m.recurrence = p.build()
 					}
 				}
 			}
+			m.finishChoiceOwner()
 		}
 		return m, nil
 	case selectorCancelledMsg:
 		m.purpose = chooserNone
 		m.selector.Close()
+		m.finishChoiceOwner()
 		return m, nil
 	}
 
-	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		// Choice fields: open on enter/space before outer submit.
-		if m.focusIndex == 3 || m.focusIndex == 4 {
-			if key.Matches(msg, m.keys.Bind("choice_field", "open")) {
-				m.openOuterChooser(m.focusIndex, "")
+	// The outer selector captures all input while open.
+	if m.selector.Visible() {
+		var cmd tea.Cmd
+		m.selector, cmd = m.selector.Update(msg)
+		return m, cmd
+	}
+
+	// Input is ignored while a selector/custom result is pending.
+	if m.choiceOpen {
+		return m, nil
+	}
+
+	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
+		if m.mode == formBrowsing {
+			switch {
+			case key.Matches(keyMsg, m.keys.Bind("form", "save")):
+				cmd := m.trySubmit()
+				return m, cmd
+			case key.Matches(keyMsg, m.keys.Bind("form", "cancel")):
+				m.Hide()
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Bind("form", "next_field")):
+				m.selected = (m.selected + 1) % formFieldCount
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Bind("form", "previous_field")):
+				m.selected = (m.selected - 1 + formFieldCount) % formFieldCount
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Bind("form", "edit")):
+				m.openField(m.selected)
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Bind("form", "jump_title")):
+				m.selected = fieldTitle
+				m.openField(fieldTitle)
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Bind("form", "jump_notes")):
+				m.selected = fieldNotes
+				m.openField(fieldNotes)
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Bind("form", "jump_date")):
+				m.selected = fieldDate
+				m.openField(fieldDate)
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Bind("form", "jump_time")):
+				m.selected = fieldTime
+				m.openField(fieldTime)
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Bind("form", "jump_priority")):
+				m.selected = fieldPriority
+				m.openField(fieldPriority)
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Bind("form", "jump_recurrence")):
+				m.selected = fieldRecurrence
+				m.openField(fieldRecurrence)
 				return m, nil
 			}
+			// Other typed keys and paste do nothing while browsing.
+			return m, nil
 		}
+
+		// Editing a simple field: intercept field controls and form.save.
 		switch {
-		case key.Matches(msg, m.keys.Bind("dialog", "cancel")):
-			m.Hide()
-			return m, nil
-		case key.Matches(msg, m.keys.Bind("dialog", "next_field")):
-			if m.focusIndex == 2 && m.picker.TryAcceptSuggestion() {
-				return m, nil
-			}
-			m.focusIndex = (m.focusIndex + 1) % fieldCount
-			m.focusField(m.focusIndex)
-			return m, nil
-		case key.Matches(msg, m.keys.Bind("dialog", "previous_field")):
-			if m.focusIndex == 2 && m.picker.TryAcceptSuggestion() {
-				return m, nil
-			}
-			m.focusIndex = (m.focusIndex - 1 + fieldCount) % fieldCount
-			m.focusField(m.focusIndex)
-			return m, nil
-		case key.Matches(msg, m.keys.Bind("dialog", "submit")):
-			// Ctrl+S saves the outer form; inner chooser/editor handled above.
+		case key.Matches(keyMsg, m.keys.Bind("form", "save")):
 			cmd := m.trySubmit()
 			return m, cmd
-		}
-
-		// Typing on a choice field opens its chooser, seeding the query.
-		if m.focusIndex == 3 || m.focusIndex == 4 {
-			if len(msg.Text) > 0 && msg.Mod == 0 {
-				m.openOuterChooser(m.focusIndex, msg.Text)
-				paste := tea.PasteMsg{Content: msg.Text}
-				var cmd tea.Cmd
-				m.selector, cmd = m.selector.Update(paste)
-				return m, cmd
+		case key.Matches(keyMsg, m.keys.Bind("field", "confirm")):
+			if m.commitField(m.active) {
+				m.closeField()
 			}
 			return m, nil
-		}
-
-		if m.focusIndex == 2 {
-			var cmd tea.Cmd
-			m.picker, cmd = m.picker.Update(msg)
-			m.dueTouched = m.dueTouched || m.picker.Value() != m.dueText
-			return m, cmd
+		case key.Matches(keyMsg, m.keys.Bind("field", "cancel")):
+			m.cancelField()
+			return m, nil
+		case key.Matches(keyMsg, m.keys.Bind("field", "next_field")):
+			if m.commitField(m.active) {
+				m.closeField()
+				m.selected = (m.selected + 1) % formFieldCount
+			}
+			return m, nil
+		case key.Matches(keyMsg, m.keys.Bind("field", "previous_field")):
+			if m.commitField(m.active) {
+				m.closeField()
+				m.selected = (m.selected - 1 + formFieldCount) % formFieldCount
+			}
+			return m, nil
 		}
 	}
 
+	// Forward everything else to the active simple editor.
 	var cmd tea.Cmd
-	switch m.focusIndex {
-	case 0:
+	switch m.active {
+	case fieldTitle:
 		m.titleInput, cmd = m.titleInput.Update(msg)
-	case 1:
+	case fieldNotes:
 		m.notesInput, cmd = m.notesInput.Update(msg)
-	case 2:
+	case fieldDate:
 		m.picker, cmd = m.picker.Update(msg)
-		m.dueTouched = m.dueTouched || m.picker.Value() != m.dueText
+	case fieldTime:
+		before := m.timeInput.Value()
+		m.timeInput, cmd = m.timeInput.Update(msg)
+		if m.timeInput.Value() != before {
+			m.updateTimeDraft()
+		}
+	default:
+		return m, nil
 	}
 	return m, cmd
 }
 
-// openOuterChooser opens the shared chooser for a choice field, optionally
-// seeding the query with typed text.
-func (m *CreateModel) openOuterChooser(focusIndex int, seed string) {
-	if focusIndex == 3 {
+// finishChoiceOwner returns to browsing the row that owned the consumed
+// selector or custom editor result.
+func (m *CreateModel) finishChoiceOwner() {
+	m.choiceOpen = false
+	if m.choiceOwner != noField {
+		m.mode = formBrowsing
+		m.selected = m.choiceOwner
+	}
+	m.choiceOwner = noField
+	m.active = noField
+	m.blurAll()
+}
+
+// openOuterChooser opens the shared chooser for a choice field.
+func (m *CreateModel) openOuterChooser(f formField, seed string) {
+	if f == fieldPriority {
 		m.purpose = chooserPriority
 		m.selector.Open(priorityOptions(), []string{priorityID(m.priority)}, false)
 	} else {
@@ -413,30 +865,64 @@ func (m *CreateModel) openOuterChooser(focusIndex int, seed string) {
 
 // trySubmit validates the form and emits Create/Edit submit messages.
 func (m *CreateModel) trySubmit() tea.Cmd {
+	if m.choiceOpen {
+		return nil
+	}
+	// Saving from a simple editor validates and commits its draft first.
+	if m.mode == formEditing && isSimpleField(m.active) {
+		if !m.commitField(m.active) {
+			return nil
+		}
+		m.closeField()
+	}
+
 	title := strings.TrimSpace(m.titleInput.Value())
 	if title == "" {
+		m.errText = "Title is required"
+		m.selected = fieldTitle
+		m.openField(fieldTitle)
 		return nil
 	}
 
-	due, dueErr := m.picker.Resolve()
-	if dueErr != nil {
-		m.errText = dueErr.Error()
-		m.focusIndex = 2
-		m.focusField(2)
+	if m.committedTime != "" && m.committedDate == "" {
+		m.errText = "Set a date before a time"
+		m.selected = fieldDate
+		m.openField(fieldDate)
 		return nil
 	}
 
-	if len(m.recurrence) > 0 && due == nil {
-		m.errText = "Repeating reminders need a due date"
-		m.focusIndex = 2
-		m.focusField(2)
+	composed, err := m.composeDue()
+	if err != nil {
+		m.errText = err.Error()
+		m.selected = fieldDate
+		m.openField(fieldDate)
 		return nil
+	}
+	due, clearDue, err := m.duePatch()
+	if err != nil {
+		m.errText = err.Error()
+		m.selected = fieldDate
+		m.openField(fieldDate)
+		return nil
+	}
+
+	rulesChanged := !rulesEqual(m.recurrence, m.origRules)
+	dueChanged := m.dueStateChanged()
+	if len(m.recurrence) > 0 && composed == nil {
+		clearingRules := clearDue && len(m.origRules) > 0
+		unrelated := m.isEditing() && !rulesChanged && !dueChanged
+		if !clearingRules && !unrelated {
+			m.errText = "Repeating reminders need a due date"
+			m.selected = fieldDate
+			m.openField(fieldDate)
+			return nil
+		}
 	}
 
 	m.errText = ""
 	m.Hide()
 	if m.isEditing() {
-		return m.buildEditCmd(title, due)
+		return m.buildEditCmd(title, due, clearDue)
 	}
 	input := reminders.CreateReminderInput{
 		Title:           title,
@@ -451,7 +937,7 @@ func (m *CreateModel) trySubmit() tea.Cmd {
 	}
 }
 
-func (m CreateModel) buildEditCmd(title string, due *time.Time) tea.Cmd {
+func (m CreateModel) buildEditCmd(title string, due *time.Time, clearDue bool) tea.Cmd {
 	id := m.editingID
 	input := reminders.UpdateReminderInput{
 		Title: &title,
@@ -460,18 +946,21 @@ func (m CreateModel) buildEditCmd(title string, due *time.Time) tea.Cmd {
 	notes := strings.TrimSpace(m.notesInput.Value())
 	input.Notes = &notes
 
-	if m.dueTouched {
-		if m.picker.Value() == "" {
-			input.ClearDueDate = true
-		} else {
-			input.DueDate = due
-		}
+	if clearDue {
+		input.ClearDueDate = true
+	} else if due != nil {
+		input.DueDate = due
 	}
 
 	priority := m.priority
 	input.Priority = &priority
 
-	if m.recurrenceTouched && !rulesEqual(m.recurrence, m.origRules) {
+	rulesChanged := !rulesEqual(m.recurrence, m.origRules)
+	if clearDue && len(m.origRules) > 0 {
+		// Clearing the due date clears recurrence in the same save.
+		empty := []eventkit.RecurrenceRule{}
+		input.RecurrenceRules = &empty
+	} else if rulesChanged {
 		rules := make([]eventkit.RecurrenceRule, 0, len(m.recurrence))
 		rules = append(rules, m.recurrence...)
 		input.RecurrenceRules = &rules
@@ -482,65 +971,200 @@ func (m CreateModel) buildEditCmd(title string, due *time.Time) tea.Cmd {
 	}
 }
 
+// rebuildPane recomputes child sizes, renders the active content into the
+// viewport and applies focus scrolling. View only renders the cached frame.
+func (m *CreateModel) rebuildPane() {
+	if !m.visible {
+		return
+	}
+	outerW := min(112, m.width-2)
+	outerH := min(30, m.height-2)
+	if m.width < 26 || m.height < 12 || outerW < 18 || outerH < 6 {
+		m.tooSmall = true
+		m.cachedView = lipgloss.Place(m.width, m.height,
+			lipgloss.Center, lipgloss.Center,
+			"Terminal too small for the reminder form")
+		return
+	}
+	m.tooSmall = false
+
+	style := styles.DialogStyle.Width(outerW)
+	frameW, frameH := style.GetFrameSize()
+	contentW := outerW - frameW
+	contentH := outerH - frameH
+
+	// Measured reservation: DialogTitleStyle carries a bottom margin (2
+	// lines), the footer is one line, and a sticky error adds a blank line
+	// plus the error line.
+	headerH, footerH := 2, 1
+	errH := 0
+	if m.errText != "" {
+		errH = 2 // blank line + error line
+	}
+	bodyH := contentH - headerH - footerH - errH
+	wide := contentW >= 70
+	minBody := 6
+	if !wide {
+		minBody = 6 + 1 + 3 // summaries + gap + editor rows
+	}
+	if bodyH < minBody {
+		m.tooSmall = true
+		m.cachedView = lipgloss.Place(m.width, m.height,
+			lipgloss.Center, lipgloss.Center,
+			"Terminal too small for the reminder form")
+		return
+	}
+
+	leftLines := m.summaryLines()
+	var right string
+	focus := 0
+	var leftBlock string
+	if wide {
+		leftW := min(32, max(24, contentW/3))
+		rightW := contentW - leftW - 3
+		m.paneW, m.paneH = rightW, bodyH
+		right, focus = m.paneContent(rightW, bodyH)
+		for len(leftLines) < bodyH {
+			leftLines = append(leftLines, "")
+		}
+		leftBlock = strings.Join(leftLines, "\n")
+		sep := lipgloss.NewStyle().Width(3).Render(strings.Repeat(" │\n", bodyH))
+		body := lipgloss.JoinHorizontal(lipgloss.Top, leftBlock, sep, right)
+		m.renderBody(style, body, bodyH, focus, contentW)
+		return
+	}
+
+	// Stacked: compact summaries above the active editor.
+	m.paneW, m.paneH = contentW, bodyH
+	editor, editorFocus := m.paneContent(contentW, bodyH-7)
+	summaryBlock := strings.Join(leftLines, "\n") + "\n\n"
+	right = summaryBlock + editor
+	focus = editorFocus + 7
+	m.renderBody(style, right, bodyH, focus, contentW)
+}
+
+// renderBody sizes the viewport to the full body width, applies focus
+// scrolling and caches the complete dialog frame.
+func (m *CreateModel) renderBody(style lipgloss.Style, body string, bodyH, focus, bodyW int) {
+	m.viewport.SetWidth(max(1, bodyW))
+	m.viewport.SetHeight(bodyH)
+	m.viewport.SetContent(body)
+	m.viewport.EnsureVisible(focus, 0, max(0, bodyW-1))
+
+	dialogTitle := "New Reminder"
+	if m.isEditing() {
+		dialogTitle = "Edit Reminder"
+	}
+	var b strings.Builder
+	b.WriteString(styles.DialogTitleStyle.Render(dialogTitle))
+	b.WriteString("\n")
+	b.WriteString(m.viewport.View())
+	if m.errText != "" {
+		b.WriteString("\n\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(styles.Red).Render(m.errText))
+	}
+	b.WriteString("\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).Render(m.footerHints()))
+	m.cachedView = lipgloss.Place(m.width, m.height,
+		lipgloss.Center, lipgloss.Center,
+		style.Render(b.String()))
+}
+
+// hint joins nonempty hint fragments with two spaces, omitting disabled
+// actions.
+func hint(parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, "  ")
+}
+
+func (m CreateModel) footerHints() string {
+	if m.mode == formEditing && isSimpleField(m.active) {
+		return hint(
+			short(m.keys, "field", "confirm")+" finish",
+			short(m.keys, "field", "cancel")+" cancel",
+			short(m.keys, "field", "next_field")+" next",
+			short(m.keys, "form", "save")+" save",
+		)
+	}
+	if m.selector.Visible() || m.recurrenceE.Visible() {
+		return ""
+	}
+	return hint(
+		short(m.keys, "form", "next_field")+" next",
+		short(m.keys, "form", "previous_field")+" prev",
+		short(m.keys, "form", "edit")+" edit",
+		short(m.keys, "form", "save")+" save",
+		short(m.keys, "form", "cancel")+" cancel",
+	)
+}
+
+// short renders the configured aliases of scope.action, empty when disabled.
+func short(keys keybind.Map, scope, action string) string {
+	return keybind.ShortKeys(keys.Aliases(scope, action))
+}
+
+// paneContent renders the right-hand pane for the current state and returns
+// its focus line. It sizes the active child to the actual pane dimensions.
+func (m *CreateModel) paneContent(width, height int) (string, int) {
+	if m.recurrenceE.Visible() {
+		m.recurrenceE.SetSize(width, height)
+		return m.recurrenceE.View(), m.recurrenceE.FocusLine()
+	}
+	if m.selector.Visible() {
+		m.selector.SetSize(width, height)
+		return m.selector.View(), 0
+	}
+	if m.mode == formEditing {
+		switch m.active {
+		case fieldTitle:
+			return m.titleInput.View(), 0
+		case fieldNotes:
+			return m.notesInput.View(), 0
+		case fieldDate:
+			return m.picker.View(), m.picker.FocusLine()
+		case fieldTime:
+			var b strings.Builder
+			b.WriteString(m.timeInput.View())
+			b.WriteString("\n")
+			switch {
+			case m.timeDraftErr != "":
+				b.WriteString(lipgloss.NewStyle().Foreground(styles.Red).Render(m.timeDraftErr))
+			case m.timeDraft != nil:
+				b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).
+					Render("→ " + m.timeDraft.String() + " " + m.zoneAbbrev()))
+			}
+			b.WriteString("\n")
+			b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).
+				Render("Blank time with a date means 09:00 " + m.zoneAbbrev()))
+			return b.String(), 0
+		}
+	}
+
+	// Browsing: the selected value with edit/save instructions.
+	name := m.fieldLabel(m.selected)
+	value := m.summaryValue(m.selected)
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Foreground(styles.Teal).Bold(true).Render(name))
+	b.WriteString("\n\n")
+	b.WriteString(value)
+	b.WriteString("\n\n")
+	b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).Render(hint(
+		short(m.keys, "form", "edit")+" edit",
+		short(m.keys, "form", "save")+" save",
+		short(m.keys, "form", "cancel")+" cancel form",
+	)))
+	return b.String(), 0
+}
+
+// View renders the cached dialog frame.
 func (m CreateModel) View() string {
 	if !m.visible {
 		return ""
 	}
-
-	dialogTitle := "New Reminder"
-	footer := keybind.ShortKeys(m.keys.Aliases("dialog", "submit")) + ": create  " +
-		keybind.ShortKeys(m.keys.Aliases("dialog", "next_field")) + ": next field  " +
-		keybind.ShortKeys(m.keys.Aliases("dialog", "cancel")) + ": cancel"
-	if m.isEditing() {
-		dialogTitle = "Edit Reminder"
-		footer = keybind.ShortKeys(m.keys.Aliases("dialog", "submit")) + ": save  " +
-			keybind.ShortKeys(m.keys.Aliases("dialog", "next_field")) + ": next field  " +
-			keybind.ShortKeys(m.keys.Aliases("dialog", "cancel")) + ": cancel"
-	}
-
-	title := styles.DialogTitleStyle.Render(dialogTitle)
-
-	// Inner chooser / custom-repeat editor replace the form content.
-	if m.selector.Visible() {
-		return lipgloss.Place(m.width, m.height,
-			lipgloss.Center, lipgloss.Center,
-			dialogBoxStyle(m.width).Render(title+"\n\n"+m.selector.View()))
-	}
-	if m.recurrenceE.Visible() {
-		return m.recurrenceE.View()
-	}
-
-	dueLine := m.picker.Value()
-	if dueLine == "" {
-		dueLine = "None"
-	}
-	recurrenceValue := recurrenceLabel(m.recurrence)
-
-	var b strings.Builder
-	b.WriteString(title)
-	b.WriteString("\n\n")
-	b.WriteString(m.titleInput.View())
-	b.WriteString("\n\n")
-	b.WriteString(m.notesInput.View())
-	b.WriteString("\n\n")
-	if m.focusIndex == 2 {
-		b.WriteString(m.picker.View())
-	} else {
-		b.WriteString("Due date: " + dueLine)
-	}
-	b.WriteString("\n\n")
-	b.WriteString("Priority:   " + priorityLabel(m.priority) + "  ▸")
-	b.WriteString("\n\n")
-	b.WriteString("Repeat:     " + recurrenceValue + "  ▸")
-	b.WriteString("\n")
-	if m.errText != "" {
-		b.WriteString("\n" + lipgloss.NewStyle().Foreground(styles.Red).Render(m.errText) + "\n")
-	}
-	b.WriteString("\n" + lipgloss.NewStyle().Foreground(styles.DimGray).Render(footer))
-
-	dlg := dialogBoxStyle(m.width).Render(b.String())
-	return lipgloss.Place(m.width, m.height,
-		lipgloss.Center, lipgloss.Center,
-		dlg,
-	)
+	return m.cachedView
 }

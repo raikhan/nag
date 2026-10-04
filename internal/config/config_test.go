@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,8 +23,11 @@ func TestLoadMissingFileYieldsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AceAlphabet != keybind.DefaultAceAlphabet {
+	if cfg.AceAlphabet != strings.ReplaceAll(keybind.DefaultAceAlphabet, "z", "") {
 		t.Fatalf("alphabet = %q", cfg.AceAlphabet)
+	}
+	if cfg.AceTimeoutSeconds != -1 {
+		t.Fatalf("timeout = %d", cfg.AceTimeoutSeconds)
 	}
 	if got := cfg.Keys["global"]["quit"]; len(got) != 2 {
 		t.Fatalf("quit aliases = %v", got)
@@ -103,6 +107,61 @@ func TestLoadErrors(t *testing.T) {
 				t.Fatal("expected error")
 			} else if !strings.HasPrefix(err.Error(), path+":") {
 				t.Fatalf("error not path-qualified: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadAceTimeout(t *testing.T) {
+	write := func(t *testing.T, body string) {
+		t.Helper()
+		dir := tempXDG(t)
+		path := filepath.Join(dir, "nag", "config.toml")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("timeout-only table keeps alphabet default", func(t *testing.T) {
+		write(t, "[ace]\ntimeout_seconds = 2\n")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.AceTimeoutSeconds != 2 {
+			t.Fatalf("timeout = %d", cfg.AceTimeoutSeconds)
+		}
+		if cfg.AceAlphabet != strings.ReplaceAll(keybind.DefaultAceAlphabet, "z", "") {
+			t.Fatalf("alphabet = %q", cfg.AceAlphabet)
+		}
+	})
+
+	for _, ok := range []int64{-1, 0, 1, 30, 9223372036} {
+		t.Run(fmt.Sprintf("accepts %d", ok), func(t *testing.T) {
+			write(t, fmt.Sprintf("[ace]\ntimeout_seconds = %d\n", ok))
+			cfg, err := Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.AceTimeoutSeconds != ok {
+				t.Fatalf("timeout = %d, want %d", cfg.AceTimeoutSeconds, ok)
+			}
+		})
+	}
+
+	for _, bad := range []string{
+		"-2",
+		"9223372037",
+		"1.5",
+		"\"2\"",
+	} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			write(t, "[ace]\ntimeout_seconds = "+bad+"\n")
+			if _, err := Load(); err == nil {
+				t.Fatal("expected timeout error")
 			}
 		})
 	}

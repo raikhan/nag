@@ -2,10 +2,17 @@ package ui
 
 import (
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 )
+
+// aceTimeoutMsg expires an ace snapshot after the configured timeout. The
+// generation guards against stale timers from an earlier snapshot.
+type aceTimeoutMsg struct {
+	generation uint64
+}
 
 // aceTarget identifies one jumpable visible row by its panel and stable ID.
 type aceTarget struct {
@@ -62,12 +69,14 @@ func (m *Model) aceTargets() []aceTarget {
 }
 
 // aceStart enters ace mode, labelling every eligible visible row. With no
-// targets it stays in normal mode and reports why.
-func (m *Model) aceStart() {
+// targets it stays in normal mode and reports why. When a positive ace
+// timeout is configured it returns a one-shot expiry tick command; the timer
+// runs from activation, not from the last prefix key.
+func (m *Model) aceStart() tea.Cmd {
 	targets := m.aceTargets()
 	if len(targets) == 0 {
 		m.statusBar.SetInfo("No jump targets")
-		return
+		return nil
 	}
 	labels := aceLabels(len(targets), m.aceAlphabet)
 	sidebar := make(map[string]string)
@@ -84,14 +93,27 @@ func (m *Model) aceStart() {
 	m.listPanel.SetAceLabels(sidebar)
 	m.reminderPanel.SetAceLabels(reminders)
 	m.ace = aceState{active: true, targets: targets}
+	// Invalidate any timer left over from a previous snapshot, then capture
+	// the new generation so a stale tick can never cancel this one.
+	m.aceGeneration++
+	gen := m.aceGeneration
+	if m.aceTimeout >= 0 {
+		timeout := m.aceTimeout
+		return tea.Tick(timeout, func(time.Time) tea.Msg {
+			return aceTimeoutMsg{generation: gen}
+		})
+	}
+	return nil
 }
 
 // aceExit leaves ace mode, clearing every delegate label. The selection is
-// left unchanged unless a target was matched.
+// left unchanged unless a target was matched. The generation advances so a
+// still-pending expiry tick from this snapshot can never cancel a later one.
 func (m *Model) aceExit() {
 	if !m.ace.active {
 		return
 	}
+	m.aceGeneration++
 	m.ace = aceState{}
 	m.listPanel.SetAceLabels(nil)
 	m.reminderPanel.SetAceLabels(nil)
@@ -104,11 +126,16 @@ func (m *Model) aceSetPrefix(prefix string) {
 	m.reminderPanel.SetAcePrefix(prefix)
 }
 
-// aceHandleKey consumes one key press while ace is active. Alphabet keys
+// aceHandleKey consumes one key press while ace is active. The configured
+// trigger toggles ace off without changing the selection; alphabet keys
 // extend the prefix (a complete label jumps), backspace removes one letter
 // (empty exits), cancel exits without changing the selection, and every
 // other key does nothing.
 func (m *Model) aceHandleKey(msg tea.KeyPressMsg) tea.Cmd {
+	if key.Matches(msg, m.keys.Bind("global", "ace_jump")) {
+		m.aceExit()
+		return nil
+	}
 	if key.Matches(msg, m.keys.Bind("ace", "cancel")) {
 		m.aceExit()
 		return nil
