@@ -78,6 +78,10 @@ const (
 	alarmCustom
 )
 
+// alarmCustomID is the chooser row that hands off to the free-form lead
+// time editor rather than committing an offset of its own.
+const alarmCustomID = "custom"
+
 const noField formField = -1
 
 // formMode distinguishes browsing the six rows from editing one field.
@@ -100,10 +104,16 @@ type CreateModel struct {
 	alarmKind   int
 	alarmOffset time.Duration
 	alarmAt     *time.Time
-	origAlarms  []reminders.Alarm
-	selector    selectorModel
-	purpose     chooserPurpose
-	recurrenceE RecurrenceModel
+	// The free-form lead time editor opened from the Custom… row.
+	alarmCustomInput textinput.Model
+	alarmDraftErr    string
+	// alarmCustomOpen marks that editor as the live choice surface, so
+	// keys reach its input instead of the pending-result gate.
+	alarmCustomOpen bool
+	origAlarms      []reminders.Alarm
+	selector        selectorModel
+	purpose         chooserPurpose
+	recurrenceE     RecurrenceModel
 
 	mode     formMode
 	selected formField
@@ -171,14 +181,22 @@ func NewCreate() CreateModel {
 	tmi.Prompt = "Time:     "
 	applyInputStyles(&tmi)
 
+	aci := textinput.New()
+	aci.Placeholder = "e.g. 45m, 2h30m, 3d"
+	aci.CharLimit = 32
+	aci.SetWidth(20)
+	aci.Prompt = "Lead time: "
+	applyInputStyles(&aci)
+
 	return CreateModel{
-		titleInput: ti,
-		notesInput: ni,
-		timeInput:  tmi,
-		priority:   reminders.PriorityNone,
-		active:     noField,
-		selected:   fieldTitle,
-		viewport:   viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
+		titleInput:       ti,
+		notesInput:       ni,
+		timeInput:        tmi,
+		alarmCustomInput: aci,
+		priority:         reminders.PriorityNone,
+		active:           noField,
+		selected:         fieldTitle,
+		viewport:         viewport.New(viewport.WithWidth(1), viewport.WithHeight(1)),
 	}
 }
 
@@ -193,6 +211,7 @@ func (m *CreateModel) SetKeys(keys keybind.Map) {
 	km.InsertNewline = key.NewBinding(key.WithKeys(keys.Aliases("field", "notes_newline")...))
 	m.notesInput.KeyMap = km
 	projectTextInputKeys(&m.timeInput, keys, "field")
+	projectTextInputKeys(&m.alarmCustomInput, keys, "field")
 }
 
 func midnightOf(t time.Time) time.Time {
@@ -298,6 +317,9 @@ func (m *CreateModel) resetFormState() {
 	m.alarmKind = alarmNone
 	m.alarmOffset = 0
 	m.alarmAt = nil
+	m.alarmDraftErr = ""
+	m.alarmCustomInput.SetValue("")
+	m.alarmCustomOpen = false
 	m.origAlarms = nil
 	m.committedDate = ""
 	m.committedTime = ""
@@ -327,6 +349,7 @@ func (m *CreateModel) blurAll() {
 	m.titleInput.Blur()
 	m.notesInput.Blur()
 	m.timeInput.Blur()
+	m.alarmCustomInput.Blur()
 	m.picker.Blur()
 }
 
@@ -384,6 +407,7 @@ func (m *CreateModel) openField(f formField) {
 	case fieldAlarm:
 		m.choiceOwner = fieldAlarm
 		m.choiceOpen = true
+		m.alarmCustomInput.Blur()
 		m.openOuterChooser(fieldAlarm, "")
 	case fieldPriority:
 		m.choiceOwner = fieldPriority
@@ -573,7 +597,7 @@ func (m *CreateModel) updateTimeDraft() {
 
 // composeDue builds the final due timestamp exactly once from the committed
 // civil date plus clock in the captured local location. Blank time with a
-// date means 09:00 local. A nonexistent DST clock is rejected.
+// date means midnight local. A nonexistent DST clock is rejected.
 func (m *CreateModel) composeDue() (*time.Time, error) {
 	if m.committedDate == "" {
 		return nil, nil
@@ -582,7 +606,7 @@ func (m *CreateModel) composeDue() (*time.Time, error) {
 	if err != nil {
 		return nil, err
 	}
-	hour, minute := 9, 0
+	hour, minute := 0, 0
 	if m.committedTime != "" {
 		clock, present, err := timeentry.Parse(m.committedTime, m.now)
 		if err != nil {
@@ -680,26 +704,30 @@ func priorityOptions() []selectorOption {
 	}
 }
 
-// alarmPresets are the Remind me chooser rows. Offsets are relative alarms
-// (they follow the due date); "At due time" is materialized as an absolute
-// alarm because EventKit drops a zero relative offset.
+// alarmPresets are the Remind me chooser rows, mirroring the Reminders
+// app's own early-reminder list. Every offset is a relative alarm, so the
+// alert follows the due date when it moves.
 var alarmPresets = []struct{ id, label string }{
 	{"none", "None"},
-	{"attime", "At due time"},
 	{"5m", "5 minutes before"},
-	{"10m", "10 minutes before"},
 	{"15m", "15 minutes before"},
 	{"30m", "30 minutes before"},
 	{"1h", "1 hour before"},
 	{"2h", "2 hours before"},
 	{"1d", "1 day before"},
+	{"2d", "2 days before"},
+	{"1w", "1 week before"},
+	{"1m", "1 month before"},
 }
 
 func alarmOptions() []selectorOption {
-	opts := make([]selectorOption, 0, len(alarmPresets))
+	opts := make([]selectorOption, 0, len(alarmPresets)+1)
 	for _, p := range alarmPresets {
 		opts = append(opts, selectorOption{ID: p.id, Label: p.label})
 	}
+	// Free-form lead time, so an offset the app's own list omits is still
+	// reachable.
+	opts = append(opts, selectorOption{ID: alarmCustomID, Label: "Custom…"})
 	return opts
 }
 
@@ -709,8 +737,6 @@ func alarmPresetOffset(id string) (time.Duration, bool) {
 	switch id {
 	case "5m":
 		return 5 * time.Minute, true
-	case "10m":
-		return 10 * time.Minute, true
 	case "15m":
 		return 15 * time.Minute, true
 	case "30m":
@@ -721,18 +747,20 @@ func alarmPresetOffset(id string) (time.Duration, bool) {
 		return 2 * time.Hour, true
 	case "1d":
 		return 24 * time.Hour, true
+	case "2d":
+		return 48 * time.Hour, true
+	case "1w":
+		return 168 * time.Hour, true
+	case "1m":
+		return 30 * 24 * time.Hour, true
 	}
 	return 0, false
 }
 
 // alarmChoiceID preselects the chooser row matching the current value.
+// "attime" is no longer a row, so an absolute alarm sitting on the due
+// instant preselects None rather than a missing ID.
 func alarmChoiceID(m CreateModel) string {
-	if m.alarmKind == alarmCustom {
-		return "none"
-	}
-	if m.alarmKind == alarmAtDue {
-		return "attime"
-	}
 	if m.alarmKind == alarmBefore {
 		for _, p := range alarmPresets {
 			if off, ok := alarmPresetOffset(p.id); ok && off == m.alarmOffset {
@@ -743,10 +771,11 @@ func alarmChoiceID(m CreateModel) string {
 	return "none"
 }
 
-// alarmFromID commits a chooser row into the row's state.
+// alarmFromID commits a chooser row into the row's state. The custom row is a
+// placeholder: the real offset arrives from the free-form editor.
 func alarmFromID(id string) (kind int, offset time.Duration) {
-	if id == "attime" {
-		return alarmAtDue, 0
+	if id == alarmCustomID {
+		return alarmBefore, 0
 	}
 	if off, ok := alarmPresetOffset(id); ok {
 		return alarmBefore, off
@@ -754,9 +783,23 @@ func alarmFromID(id string) (kind int, offset time.Duration) {
 	return alarmNone, 0
 }
 
+// alarmLeadSeed renders the committed offset back into the free-form
+// editor's input grammar, so opening Custom… on an existing lead time offers
+// something to edit rather than an empty box.
+func (m CreateModel) alarmLeadSeed() string {
+	if m.alarmKind != alarmBefore || m.alarmOffset <= 0 {
+		return ""
+	}
+	d := m.alarmOffset
+	if d%time.Hour != 0 {
+		return d.String()
+	}
+	return strconv.Itoa(int(d/time.Hour)) + "h"
+}
+
 // alarmLabel renders the Remind me row: None, a preset label for a known
-// offset, "1h30m before" style text for an unknown offset, or "At Jan 2
-// 15:04" for an absolute alarm that is not the due instant.
+// offset, human text for a free-form lead time, or "At Jan 2 15:04" for an
+// absolute alarm that is not the due instant.
 func (m CreateModel) alarmLabel() string {
 	switch m.alarmKind {
 	case alarmAtDue:
@@ -767,20 +810,30 @@ func (m CreateModel) alarmLabel() string {
 				return p.label
 			}
 		}
-		if m.alarmOffset%time.Hour == 0 && m.alarmOffset > 0 {
-			h := int(m.alarmOffset / time.Hour)
-			if h == 1 {
-				return "1 hour before"
-			}
-			return strconv.Itoa(h) + " hours before"
-		}
-		return m.alarmOffset.String() + " before"
+		return leadTimeText(m.alarmOffset) + " before"
 	case alarmCustom:
 		if m.alarmAt != nil {
 			return "At " + m.alarmAt.Format("Jan 2 15:04")
 		}
 	}
 	return "None"
+}
+
+// leadTimeText renders a free-form lead time as hours and minutes, dropping
+// whichever unit is zero so 45m reads "45 minutes" and 2h30m reads
+// "2 hours 30 minutes".
+func leadTimeText(d time.Duration) string {
+	if d <= 0 {
+		return "None"
+	}
+	h, m := int(d/time.Hour), int(d%time.Hour/time.Minute)
+	switch {
+	case h == 0:
+		return strconv.Itoa(m) + " minutes"
+	case m == 0:
+		return strconv.Itoa(h) + " hours"
+	}
+	return strconv.Itoa(h) + " hours " + strconv.Itoa(m) + " minutes"
 }
 
 // alarmInput turns the Remind me row into the EventKit alarms to write. It
@@ -989,6 +1042,15 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 			m.finishChoice(true)
 		case chooserAlarm:
 			if len(msg.IDs) == 1 {
+				if msg.IDs[0] == alarmCustomID {
+					// Hand off to the free-form editor; the choice stays
+					// open until the lead time is committed.
+					m.alarmCustomInput.SetValue(m.alarmLeadSeed())
+					m.alarmDraftErr = ""
+					m.alarmCustomOpen = true
+					m.alarmCustomInput.Focus()
+					return m, nil
+				}
 				m.alarmKind, m.alarmOffset = alarmFromID(msg.IDs[0])
 				if m.alarmKind != alarmCustom {
 					m.alarmAt = nil
@@ -1040,8 +1102,9 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Input is ignored while a selector/custom result is pending.
-	if m.choiceOpen {
+	// Input is ignored while a selector/custom result is pending, except in
+	// the free-form lead time editor, which is itself the live surface.
+	if m.choiceOpen && !m.alarmCustomOpen {
 		return m, nil
 	}
 
@@ -1117,6 +1180,28 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 		case key.Matches(keyMsg, m.keys.Bind("form", "save")):
 			cmd := m.trySubmit()
 			return m, cmd
+		case m.active == fieldAlarm && m.alarmCustomOpen && key.Matches(keyMsg, m.keys.Bind("field", "cancel")):
+			// Esc abandons the draft without touching the committed value.
+			m.alarmCustomInput.SetValue("")
+			m.alarmDraftErr = ""
+			m.alarmCustomOpen = false
+			m.finishChoice(false)
+			return m, nil
+		case m.active == fieldAlarm && m.alarmCustomOpen && key.Matches(keyMsg, m.keys.Bind("field", "confirm")):
+			// The lead time commits only once it parses; a bad draft keeps
+			// the editor open so the value can be corrected.
+			d, err := timeentry.ParseLead(m.alarmCustomInput.Value())
+			if err != nil {
+				m.alarmDraftErr = err.Error()
+				return m, nil
+			}
+			m.alarmKind, m.alarmOffset = alarmBefore, d
+			m.alarmAt = nil
+			m.alarmCustomInput.SetValue("")
+			m.alarmDraftErr = ""
+			m.alarmCustomOpen = false
+			m.finishChoice(true)
+			return m, nil
 		case key.Matches(keyMsg, m.keys.Bind("field", "confirm")):
 			if m.commitField(m.active) {
 				m.advanceAfter(m.active)
@@ -1139,6 +1224,12 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 
 	// Forward everything else to the active simple editor.
 	var cmd tea.Cmd
+	if m.alarmCustomOpen {
+		m.alarmCustomInput, cmd = m.alarmCustomInput.Update(msg)
+		// Typing clears a stale parse error without committing.
+		m.alarmDraftErr = ""
+		return m, cmd
+	}
 	switch m.active {
 	case fieldTitle:
 		m.titleInput, cmd = m.titleInput.Update(msg)
@@ -1162,6 +1253,7 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 // selector or custom editor result.
 func (m *CreateModel) finishChoiceOwner() {
 	m.choiceOpen = false
+	m.alarmCustomOpen = false
 	if m.choiceOwner != noField {
 		m.mode = formBrowsing
 		m.selected = m.choiceOwner
@@ -1560,7 +1652,25 @@ func (m *CreateModel) paneContent(width, height int) (string, int) {
 			}
 			b.WriteString("\n")
 			b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).
-				Render("Blank time with a date means 09:00 " + m.zoneAbbrev()))
+				Render("Blank time with a date means midnight " + m.zoneAbbrev()))
+			return b.String(), 0
+		case fieldAlarm:
+			if !m.alarmCustomOpen {
+				break
+			}
+			m.alarmCustomInput.SetWidth(width)
+			var b strings.Builder
+			b.WriteString(m.alarmCustomInput.View())
+			b.WriteString("\n")
+			switch {
+			case m.alarmDraftErr != "":
+				b.WriteString(lipgloss.NewStyle().Foreground(styles.Red).Render(m.alarmDraftErr))
+			default:
+				if d, err := timeentry.ParseLead(m.alarmCustomInput.Value()); err == nil {
+					b.WriteString(lipgloss.NewStyle().Foreground(styles.DimGray).
+						Render("→ " + d.String() + " before"))
+				}
+			}
 			return b.String(), 0
 		}
 	}

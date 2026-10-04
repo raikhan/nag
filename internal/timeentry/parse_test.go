@@ -1,6 +1,7 @@
 package timeentry
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,54 @@ func TestParseTimeEntryCanonicalRoundTrip(t *testing.T) {
 		}
 		if again != clock {
 			t.Fatalf("canonical round trip %q -> %q -> %v differs", text, canonical, again)
+		}
+	}
+}
+func TestParseLead(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"45m", 45 * time.Minute, false},
+		{"45min", 45 * time.Minute, false},
+		{"45mins", 45 * time.Minute, false},
+		{"2h30m", 150 * time.Minute, false},
+		{"1h", time.Hour, false},
+		{"2hr30min", 150 * time.Minute, false},
+		{"3d", 72 * time.Hour, false},
+		{"3days", 72 * time.Hour, false},
+		{" 2h30m ", 150 * time.Minute, false},
+		// The app's 1 week row seeds as 168h; "w" is not in the grammar.
+		{"168h", 7 * 24 * time.Hour, false},
+		{"0m", 0, true},
+		{"0h0m", 0, true},
+		{"", 0, true},
+		{"   ", 0, true},
+		{"-5m", 0, true},
+		{"bogus", 0, true},
+		{"m", 0, true},
+		{"5", 0, true},
+		{"5x", 0, true},
+		{"1234567m", 0, true},
+		{"999999d", 0, true},
+	}
+	for _, c := range cases {
+		got, err := ParseLead(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Fatalf("ParseLead(%q) = %v, want error", c.in, got)
+			}
+			if want := "invalid lead time " + strconv.Quote(c.in); err.Error() != want {
+				t.Fatalf("ParseLead(%q) error = %q, want %q", c.in, err.Error(), want)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("ParseLead(%q): %v", c.in, err)
+		}
+		if got != c.want {
+			t.Fatalf("ParseLead(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
 }

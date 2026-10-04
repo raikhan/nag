@@ -139,15 +139,16 @@ a day/week) and live autocomplete (Ctrl-Y completes, Ctrl-N/P cycle) appear
 while the date field is focused.
 
 The Time field takes clock times: `6p`, `6pm`, `14:13`, `1413`, `615p`,
-`12am`, `12pm`, `9:05`, … A blank time with a date means 09:00 local.
+`12am`, `12pm`, `9:05`, … A blank time with a date means midnight local.
 
 ### Remind me
 
 `Remind me` writes a real EventKit alert on the reminder, so it shows up in
 Apple Reminders. It needs a due date — the row refuses to open without one and
-clearing the date clears the alert. Choose `At due time`, a lead time from 5
-minutes to 1 day, or `None`. A lead time is stored as a relative alarm, so it
-keeps following the due date when it moves.
+clearing the date clears the alert. The chooser mirrors the Reminders app's own
+list: `None`, `5 minutes` through `1 month` before, plus `Custom…` for a
+free-form lead time (`45m`, `2h30m`, `3d`). A lead time is stored as a
+relative alarm, so it keeps following the due date when it moves.
 
 Apple Reminders itself only offers `Never` and `On date` as repeat end
 conditions, so nag's `Custom…` editor offers the same two. A reminder whose rule
