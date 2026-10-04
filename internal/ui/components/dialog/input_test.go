@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/BRO3886/go-eventkit"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/oronbz/nag/internal/keybind"
 	"github.com/oronbz/nag/internal/reminders"
 )
@@ -67,6 +68,8 @@ func openFieldFor(t *testing.T, m CreateModel, target formField) CreateModel {
 	t.Helper()
 	var jump rune
 	switch target {
+	case fieldList:
+		jump = 'l'
 	case fieldTitle:
 		jump = 't'
 	case fieldNotes:
@@ -119,7 +122,7 @@ func TestV2DialogInputAndPaste(t *testing.T) {
 	// submit.
 	cm := NewCreate()
 	cm.SetKeys(keys)
-	cm.Show("Alpha")
+	cm.Show("Alpha", testLists())
 	cm = noFollow(cm)
 	if !cm.Visible() {
 		t.Fatal("create dialog did not open")
@@ -168,7 +171,7 @@ func TestV2DialogInputAndPaste(t *testing.T) {
 	// in the title field.
 	fm := NewCreate()
 	fm.SetKeys(keys)
-	fm.Show("Alpha")
+	fm.Show("Alpha", testLists())
 	fm = noFollow(fm)
 	fm, _ = fm.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // notes selected
 	fm, _ = fm.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
@@ -242,7 +245,7 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 
 	m := NewCreate()
 	m.SetKeys(keys)
-	m.Show("Alpha")
+	m.Show("Alpha", testLists())
 	m = noFollow(m)
 	if m.mode != formBrowsing || m.selected != fieldTitle {
 		t.Fatalf("browsing must start at title: mode %v selected %d", m.mode, m.selected)
@@ -251,8 +254,8 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 		t.Fatal("no editor may be focused while browsing")
 	}
 
-	// Tab cycles all six rows without opening any editor.
-	order := []formField{fieldNotes, fieldDate, fieldTime, fieldPriority, fieldRecurrence, fieldTitle}
+	// Tab cycles all seven rows without opening any editor.
+	order := []formField{fieldNotes, fieldDate, fieldTime, fieldPriority, fieldRecurrence, fieldList, fieldTitle}
 	for _, want := range order {
 		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
 		if m.mode != formBrowsing || m.selected != want {
@@ -268,11 +271,11 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 	}
 	// Shift-Tab and k go backwards.
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
-	if m.selected != fieldRecurrence {
+	if m.selected != fieldList {
 		t.Fatalf("shift+tab selected %d", m.selected)
 	}
 	m, _ = m.Update(press('k', "k"))
-	if m.selected != fieldPriority {
+	if m.selected != fieldRecurrence {
 		t.Fatalf("k selected %d", m.selected)
 	}
 
@@ -285,11 +288,11 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 
 	// Enter opens the selected field, Enter finishes it, no submit.
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.mode != formEditing || m.active != fieldPriority {
-		t.Fatalf("enter did not open priority: %v %d", m.mode, m.active)
+	if m.mode != formEditing || m.active != fieldRecurrence {
+		t.Fatalf("enter did not open recurrence: %v %d", m.mode, m.active)
 	}
 	if !m.selector.Visible() {
-		t.Fatal("priority selector did not open")
+		t.Fatal("recurrence selector did not open")
 	}
 	// Selector captures input: Esc cancels it back to browsing.
 	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
@@ -297,8 +300,8 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 		t.Fatal("esc did not cancel the selector")
 	}
 	m, _ = m.Update(selectorCancelledMsg{})
-	if m.mode != formBrowsing || m.selected != fieldPriority {
-		t.Fatalf("cancel did not return to browsing priority: %v %d", m.mode, m.selected)
+	if m.mode != formBrowsing || m.selected != fieldRecurrence {
+		t.Fatalf("cancel did not return to browsing recurrence: %v %d", m.mode, m.selected)
 	}
 
 	// Every mnemonic opens its field.
@@ -312,10 +315,10 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 
 	// While editing Title, j/k and mnemonic letters remain text.
 	e := openFieldFor(t, m, fieldTitle)
-	for _, r := range "jktdipr" {
+	for _, r := range "jktdilpr" {
 		e, _ = e.Update(press(r, string(r)))
 	}
-	if e.titleInput.Value() != "jktdipr" {
+	if e.titleInput.Value() != "jktdilpr" {
 		t.Fatalf("mnemonic letters became commands: %q", e.titleInput.Value())
 	}
 	if e.mode != formEditing {
@@ -323,7 +326,7 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 	}
 	// Key releases are inert.
 	e, _ = e.Update(tea.KeyReleaseMsg{Code: 'j'})
-	if e.titleInput.Value() != "jktdipr" {
+	if e.titleInput.Value() != "jktdilpr" {
 		t.Fatalf("key release changed the text: %q", e.titleInput.Value())
 	}
 	// Esc restores the snapshot and returns to browsing.
@@ -332,10 +335,10 @@ func TestCreateFormBrowseEditAndJumps(t *testing.T) {
 		t.Fatalf("esc did not restore: mode %v title %q", e.mode, e.titleInput.Value())
 	}
 
-	// One visible selected-row treatment: the marker appears for each of the
-	// six fields when selected.
+	// One visible selected-row treatment: the marker appears for each of
+	// the seven fields when selected.
 	m.SetSize(120, 40)
-	for _, f := range []formField{fieldTitle, fieldNotes, fieldDate, fieldTime, fieldPriority, fieldRecurrence} {
+	for _, f := range []formField{fieldList, fieldTitle, fieldNotes, fieldDate, fieldTime, fieldPriority, fieldRecurrence} {
 		m.selected = f
 		view := m.View()
 		if !strings.Contains(view, ">") {
@@ -353,19 +356,30 @@ func editFixture() reminders.Reminder {
 		ID:       "rem-1",
 		Title:    "Fixture",
 		Notes:    "notes",
+		ListID:   "alpha-id",
 		DueDate:  &due,
 		Priority: reminders.PriorityMedium,
 	}
 }
 
-// TestCreateEditDatePriorityRecurrence exercises the six-field dialog.
+// testLists is the catalogue the form's list picker draws from. Today is a
+// smart list, which the picker must never offer.
+func testLists() []reminders.ReminderList {
+	return []reminders.ReminderList{
+		{ID: reminders.SmartListToday, Title: "Today", Kind: reminders.ListSmart},
+		{ID: "alpha-id", Title: "Alpha", Color: "#2E7FFA"},
+		{ID: "beta-id", Title: "Beta"},
+	}
+}
+
+// TestCreateEditDatePriorityRecurrence exercises the seven-field dialog.
 func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 	keys := testKeys(t)
 
 	t.Run("calendar movement produces submitted due date", func(t *testing.T) {
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.ShowEdit(editFixture())
+		m.ShowEdit(editFixture(), testLists())
 		m = openFieldFor(t, m, fieldDate)
 		m.picker.SetValue("")
 		m, _ = m.Update(tea.PasteMsg{Content: "2026-10-04"})
@@ -389,7 +403,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 	t.Run("typed date moves calendar and retains time", func(t *testing.T) {
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.ShowEdit(editFixture())
+		m.ShowEdit(editFixture(), testLists())
 		m = openFieldFor(t, m, fieldDate)
 		m, _ = m.Update(ctrlPress('j')) // +7 days from the edit base
 		if m.picker.Value() != "2026-10-11" {
@@ -407,7 +421,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 	t.Run("invalid due blocks submission", func(t *testing.T) {
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.ShowEdit(editFixture())
+		m.ShowEdit(editFixture(), testLists())
 		m = openFieldFor(t, m, fieldDate)
 		m, _ = m.Update(tea.PasteMsg{Content: "not a date"})
 		m, cmd := m.Update(ctrlPress('s'))
@@ -425,7 +439,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 	t.Run("priority fuzzy selection", func(t *testing.T) {
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.Show("Alpha")
+		m.Show("Alpha", testLists())
 		m = noFollow(m)
 		m = openFieldFor(t, m, fieldTitle)
 		m, _ = m.Update(tea.PasteMsg{Content: "Priority smoke"})
@@ -458,7 +472,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 	t.Run("repeat preset daily", func(t *testing.T) {
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.Show("Alpha")
+		m.Show("Alpha", testLists())
 		m = noFollow(m)
 		m = openFieldFor(t, m, fieldTitle)
 		m, _ = m.Update(tea.PasteMsg{Content: "Repeating"})
@@ -480,7 +494,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 	t.Run("custom weekly mon fri interval 3 until a date", func(t *testing.T) {
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.ShowEdit(editFixture())
+		m.ShowEdit(editFixture(), testLists())
 		m = openFieldFor(t, m, fieldRecurrence) // presets, empty query
 		m, _ = m.Update(press('c', "c"))        // Custom…
 		m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -546,7 +560,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 	t.Run("monthly last weekday", func(t *testing.T) {
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.ShowEdit(editFixture())
+		m.ShowEdit(editFixture(), testLists())
 		m = openFieldFor(t, m, fieldRecurrence)
 		m, _ = m.Update(press('c', "c"))
 		m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -589,7 +603,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 	t.Run("invalid custom interval stays in the editor", func(t *testing.T) {
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.ShowEdit(editFixture())
+		m.ShowEdit(editFixture(), testLists())
 		m = openFieldFor(t, m, fieldRecurrence)
 		m, _ = m.Update(press('c', "c"))
 		m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -619,7 +633,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 		r.RecurrenceRules = []eventkit.RecurrenceRule{eventkit.Weekly(2, eventkit.Saturday)}
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.ShowEdit(r)
+		m.ShowEdit(r, testLists())
 		m = openFieldFor(t, m, fieldTitle)
 		m, _ = m.Update(tea.PasteMsg{Content: " Renamed"})
 		m = finishField(t, m)
@@ -638,7 +652,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 		r.RecurrenceRules = []eventkit.RecurrenceRule{eventkit.Daily(1)}
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.ShowEdit(r)
+		m.ShowEdit(r, testLists())
 		m = openFieldFor(t, m, fieldRecurrence)
 		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"none"}})
 		m, msg := ctrlS(t, m)
@@ -653,7 +667,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 		r.RecurrenceRules = []eventkit.RecurrenceRule{eventkit.Weekly(2, eventkit.Saturday)}
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.ShowEdit(r)
+		m.ShowEdit(r, testLists())
 		m = openFieldFor(t, m, fieldRecurrence)
 		m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 		if _, ok := mustCmd(t, cmd, "chooser cancel").(selectorCancelledMsg); !ok {
@@ -671,7 +685,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 		// Creating with recurrence but no due date is blocked.
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.Show("Alpha")
+		m.Show("Alpha", testLists())
 		m = noFollow(m)
 		m = openFieldFor(t, m, fieldTitle)
 		m, _ = m.Update(tea.PasteMsg{Content: "Repeating"})
@@ -696,7 +710,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 		r.RecurrenceRules = []eventkit.RecurrenceRule{eventkit.Daily(1)}
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.ShowEdit(r)
+		m.ShowEdit(r, testLists())
 		m = openFieldFor(t, m, fieldRecurrence)
 		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"weekly"}})
 		m2, cmd := m.Update(ctrlPress('s'))
@@ -714,7 +728,7 @@ func TestCreateEditDatePriorityRecurrence(t *testing.T) {
 		r.RecurrenceRules = []eventkit.RecurrenceRule{eventkit.Daily(1)}
 		m := NewCreate()
 		m.SetKeys(keys)
-		m.ShowEdit(r)
+		m.ShowEdit(r, testLists())
 		m = openFieldFor(t, m, fieldRecurrence)
 		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"daily"}}) // unchanged
 		m, msg := ctrlS(t, m)
@@ -741,7 +755,7 @@ func newCreateAt(t *testing.T, now time.Time) CreateModel {
 	t.Helper()
 	m := NewCreate()
 	m.SetKeys(testKeys(t))
-	m.showAt("Alpha", now)
+	m.showAt("Alpha", testLists(), now)
 	m.SetSize(120, 40)
 	return noFollow(m)
 }
@@ -750,7 +764,7 @@ func newEditAt(t *testing.T, r reminders.Reminder, now time.Time) CreateModel {
 	t.Helper()
 	m := NewCreate()
 	m.SetKeys(testKeys(t))
-	m.showEditAt(r, now)
+	m.showEditAt(r, testLists(), now)
 	m.SetSize(120, 40)
 	return m
 }
@@ -824,7 +838,7 @@ func TestDateAndTimeSubmission(t *testing.T) {
 
 	t.Run("calendar keys change only the date", func(t *testing.T) {
 		due := time.Date(2026, time.October, 4, 14, 13, 0, 0, loc)
-		r := reminders.Reminder{ID: "r1", Title: "Fix", DueDate: &due}
+		r := reminders.Reminder{ID: "r1", Title: "Fix", ListID: "alpha-id", DueDate: &due}
 		m := newEditAt(t, r, now)
 		m = openFieldFor(t, m, fieldDate)
 		m, _ = m.Update(ctrlPress('l')) // +1 day
@@ -999,7 +1013,7 @@ func TestDirtyPreservationAndClearing(t *testing.T) {
 	now := time.Date(2026, time.October, 4, 13, 15, 0, 0, loc)
 	fixture := func() reminders.Reminder {
 		due := time.Date(2026, time.October, 4, 18, 0, 0, 0, loc)
-		return reminders.Reminder{ID: "r1", Title: "Fix", DueDate: &due}
+		return reminders.Reminder{ID: "r1", Title: "Fix", ListID: "alpha-id", DueDate: &due}
 	}
 
 	t.Run("title-only edit leaves no due patch", func(t *testing.T) {
@@ -1104,7 +1118,7 @@ func TestFormBehavioralRemaps(t *testing.T) {
 
 	m := NewCreate()
 	m.SetKeys(keys)
-	m.showAt("Alpha", now)
+	m.showAt("Alpha", testLists(), now)
 	m = noFollow(m)
 	m.SetSize(120, 40)
 
@@ -1158,7 +1172,7 @@ func TestFormBehavioralRemaps(t *testing.T) {
 	// Date: alt+l moves only the date.
 	d := NewCreate()
 	d.SetKeys(keys)
-	d.showEditAt(reminders.Reminder{ID: "r", Title: "F", DueDate: new(time.Date(2026, 10, 4, 9, 0, 0, 0, loc))}, now)
+	d.showEditAt(reminders.Reminder{ID: "r", Title: "F", DueDate: new(time.Date(2026, 10, 4, 9, 0, 0, 0, loc))}, testLists(), now)
 	d.SetSize(120, 40)
 	d = openFieldFor(t, d, fieldDate)
 	d, _ = d.Update(altPress('l'))
@@ -1173,7 +1187,7 @@ func TestFormBehavioralRemaps(t *testing.T) {
 	// Selector: ctrl+d moves the selection, not the query.
 	m2 := NewCreate()
 	m2.SetKeys(keys)
-	m2.showAt("Alpha", now)
+	m2.showAt("Alpha", testLists(), now)
 	m2 = noFollow(m2)
 	m2.SetSize(120, 40)
 	m2 = openFieldFor(t, m2, fieldPriority)
@@ -1192,7 +1206,7 @@ func TestV2NotesTextareaAndEditor(t *testing.T) {
 	keys := testKeys(t)
 	m := NewCreate()
 	m.SetKeys(keys)
-	m.Show("Alpha")
+	m.Show("Alpha", testLists())
 	m = noFollow(m)
 	m = openFieldFor(t, m, fieldNotes)
 
@@ -1223,7 +1237,7 @@ func TestV2NotesTextareaAndEditor(t *testing.T) {
 	}
 	m3 := NewCreate()
 	m3.SetKeys(keys)
-	m3.Show("Alpha")
+	m3.Show("Alpha", testLists())
 	m3 = noFollow(m3)
 	m3 = openFieldFor(t, m3, fieldTitle)
 	if _, cmd := m3.Update(ctrlPress('o')); cmd != nil {
@@ -1250,7 +1264,7 @@ func newFollowCreate(t *testing.T, now time.Time) CreateModel {
 	t.Helper()
 	m := NewCreate()
 	m.SetKeys(testKeys(t))
-	m.showAt("Alpha", now)
+	m.showAt("Alpha", testLists(), now)
 	m.SetSize(120, 40)
 	return m
 }
@@ -1927,4 +1941,230 @@ func TestCustomRecurrenceLabels(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCreateFormListPicker covers the List row: which row follow mode opens
+// it on, which lists it offers, that a save requires one, and that an edit
+// patches the list only when the user moved the reminder.
+func TestCreateFormListPicker(t *testing.T) {
+	keys := testKeys(t)
+	now := time.Date(2026, time.October, 4, 13, 15, 0, 0, time.Local)
+
+	t.Run("follow mode starts at the picker without a list", func(t *testing.T) {
+		m := NewCreate()
+		m.SetKeys(keys)
+		m.showAt("", testLists(), now)
+		if m.mode != formEditing || m.active != fieldList {
+			t.Fatalf("form opened on field %d, want the list picker", m.active)
+		}
+		if !m.selector.Visible() {
+			t.Fatal("the list chooser did not open")
+		}
+		// Confirming a choice advances to Title, as follow mode does.
+		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"beta-id"}})
+		if m.active != fieldTitle || m.listTitle != "Beta" {
+			t.Fatalf("after the chooser: field %d list %q", m.active, m.listTitle)
+		}
+	})
+
+	t.Run("a preselected list starts at the title", func(t *testing.T) {
+		m := NewCreate()
+		m.SetKeys(keys)
+		m.showAt("Alpha", testLists(), now)
+		if m.mode != formEditing || m.active != fieldTitle {
+			t.Fatalf("form opened on field %d, want title", m.active)
+		}
+		if m.selector.Visible() {
+			t.Fatal("the picker opened even though a list is set")
+		}
+	})
+
+	t.Run("only normal lists are offered", func(t *testing.T) {
+		m := NewCreate()
+		m.SetKeys(keys)
+		m.showAt("", testLists(), now)
+		opts := m.listOptions()
+		if len(opts) != 2 {
+			t.Fatalf("options = %+v, want the two normal lists", opts)
+		}
+		for _, o := range opts {
+			if o.Label == "Today" || o.Label == "Scheduled" {
+				t.Fatalf("smart list %q offered", o.Label)
+			}
+		}
+		if opts[0].Color != "#2E7FFA" {
+			t.Fatalf("list colour not carried into the picker: %q", opts[0].Color)
+		}
+	})
+
+	t.Run("create requires a list and then sends its title", func(t *testing.T) {
+		m := NewCreate()
+		m.SetKeys(keys)
+		m.showAt("", testLists(), now)
+		m, _ = m.Update(selectorCancelledMsg{}) // abandon the picker
+		m = noFollow(m)
+		m = openFieldFor(t, m, fieldTitle)
+		m, _ = m.Update(tea.PasteMsg{Content: "Chore"})
+		m = finishField(t, m)
+		m, cmd := m.Update(ctrlPress('s'))
+		if cmd != nil {
+			t.Fatal("a save without a list submitted")
+		}
+		if m.errText != "Select a list" || m.active != fieldList {
+			t.Fatalf("error %q on field %d", m.errText, m.active)
+		}
+		m, _ = m.Update(selectorSelectedMsg{IDs: []string{"alpha-id"}})
+		m, msg := ctrlS(t, m)
+		sub, ok := msg.(CreateSubmitMsg)
+		if !ok {
+			t.Fatalf("ctrl+s produced %T", msg)
+		}
+		if sub.Input.ListName != "Alpha" {
+			t.Fatalf("ListName = %q, want Alpha", sub.Input.ListName)
+		}
+	})
+
+	t.Run("edit patches the list only when it changed", func(t *testing.T) {
+		keys := testKeys(t)
+
+		m := NewCreate()
+		m.SetKeys(keys)
+		m.ShowEdit(editFixture(), testLists())
+		m = noFollow(m)
+		m, msg := ctrlS(t, m)
+		if edit := msg.(EditSubmitMsg); edit.Input.ListName != nil {
+			t.Fatalf("untouched list patched to %q", *edit.Input.ListName)
+		}
+
+		moved := NewCreate()
+		moved.SetKeys(keys)
+		moved.ShowEdit(editFixture(), testLists())
+		moved = openFieldFor(t, moved, fieldList)
+		moved, _ = moved.Update(selectorSelectedMsg{IDs: []string{"beta-id"}})
+		moved = noFollow(moved)
+		moved, msg = ctrlS(t, moved)
+		edit := msg.(EditSubmitMsg)
+		if edit.Input.ListName == nil || *edit.Input.ListName != "Beta" {
+			t.Fatalf("moved list = %v, want Beta", edit.Input.ListName)
+		}
+	})
+
+	t.Run("a reminder in an unknown list needs a choice", func(t *testing.T) {
+		m := NewCreate()
+		m.SetKeys(keys)
+		m.ShowEdit(reminders.Reminder{ID: "r", Title: "Orphan", ListID: "gone"}, testLists())
+		if m.listTitle != "" {
+			t.Fatalf("unknown list resolved to %q", m.listTitle)
+		}
+		m = noFollow(m)
+		m, cmd := m.Update(ctrlPress('s'))
+		if cmd != nil {
+			t.Fatalf("a save with no resolvable list submitted: %v", cmd())
+		}
+		if m.errText != "Select a list" || m.active != fieldList {
+			t.Fatalf("error %q on field %d", m.errText, m.active)
+		}
+	})
+}
+
+// TestCreateListColorRow covers the swatch row: the default, resolving a
+// stored hex, walking and clamping the selection with the calendar arrows,
+// and the colour each submit carries.
+func TestCreateListColorRow(t *testing.T) {
+	keys := testKeys(t)
+
+	t.Run("a new list starts with no colour", func(t *testing.T) {
+		m := NewCreateList()
+		m.SetKeys(keys)
+		m.Show()
+		if m.colorIdx != 0 {
+			t.Fatalf("colorIdx = %d, want 0", m.colorIdx)
+		}
+		if m.focus != focusName || !m.titleInput.Focused() {
+			t.Fatal("the name field must open focused")
+		}
+		m.SetSize(120, 40)
+		if !strings.Contains(ansi.Strip(m.View()), "Colour:") {
+			t.Fatal("the colour row is not rendered")
+		}
+	})
+
+	t.Run("editing resolves a stored colour and keeps unknown hexes out", func(t *testing.T) {
+		m := NewCreateList()
+		m.SetKeys(keys)
+		m.ShowEdit("id", "Work", "#2E7FFA")
+		if m.colorIdx != 6 {
+			t.Fatalf("colorIdx = %d, want 6", m.colorIdx)
+		}
+		m.ShowEdit("id", "Work", "#ABCDEF")
+		if m.colorIdx != 0 {
+			t.Fatalf("off-palette colour resolved to %d, want 0", m.colorIdx)
+		}
+	})
+
+	t.Run("arrows walk the swatches and clamp at both ends", func(t *testing.T) {
+		m := NewCreateList()
+		m.SetKeys(keys)
+		m.Show()
+		// Tab moves to the swatch row and blurs the name input.
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+		if m.focus != focusColor || m.titleInput.Focused() {
+			t.Fatalf("focus = %v, name focused %v", m.focus, m.titleInput.Focused())
+		}
+		m, _ = m.Update(ctrlPress('l')) // right
+		if m.colorIdx != 1 {
+			t.Fatalf("colorIdx = %d, want 1", m.colorIdx)
+		}
+		m, _ = m.Update(ctrlPress('h')) // left
+		m, _ = m.Update(ctrlPress('h')) // left again, clamped
+		if m.colorIdx != 0 {
+			t.Fatalf("colorIdx = %d, want 0", m.colorIdx)
+		}
+		m.SetSize(120, 40)
+		// Tab returns to the name field, where the letters type again.
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+		if m.focus != focusName || !m.titleInput.Focused() {
+			t.Fatal("tab did not return to the name field")
+		}
+		m, _ = m.Update(press('l', "l"))
+		if m.titleInput.Value() != "l" {
+			t.Fatalf("typing in the name field produced %q", m.titleInput.Value())
+		}
+	})
+
+	t.Run("submit carries the selected colour", func(t *testing.T) {
+		m := NewCreateList()
+		m.SetKeys(keys)
+		m.Show()
+		m.titleInput.SetValue("Errands")
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab}) // focus the swatches
+		m, _ = m.Update(ctrlPress('l'))
+		m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		sub, ok := mustCmd(t, cmd, "submit").(CreateListSubmitMsg)
+		if !ok {
+			t.Fatal("submit did not emit CreateListSubmitMsg")
+		}
+		if sub.Color != listColorPalette[1] {
+			t.Fatalf("colour = %q, want %q", sub.Color, listColorPalette[1])
+		}
+
+		e := NewCreateList()
+		e.SetKeys(keys)
+		e.ShowEdit("id", "Errands", listColorPalette[2])
+		_, cmd = e.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		es := mustCmd(t, cmd, "submit").(EditListSubmitMsg)
+		if es.Color != listColorPalette[2] || es.ID != "id" {
+			t.Fatalf("edit submit = %+v", es)
+		}
+
+		// A list left on the no-colour entry never transmits a hue.
+		p := NewCreateList()
+		p.SetKeys(keys)
+		p.Show()
+		p.titleInput.SetValue("Plain")
+		_, cmd = p.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		if got := mustCmd(t, cmd, "submit").(CreateListSubmitMsg).Color; got != "" {
+			t.Fatalf("no-colour submit carried %q", got)
+		}
+	})
 }

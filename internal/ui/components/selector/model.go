@@ -20,6 +20,9 @@ type Option struct {
 	ID          string
 	Label       string
 	Description string
+	// Color is an optional hex hue rendered as a leading dot; empty means
+	// no swatch.
+	Color string
 }
 
 // SelectedMsg is emitted on confirm with the selected option IDs.
@@ -98,7 +101,13 @@ func (d lineDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 	if index == m.Index() {
 		style = style.Foreground(styles.Teal).Bold(true)
 	}
-	fmt.Fprint(w, style.Render(it.Title()))
+	// The dot sits outside the checkbox prefix so it never shifts the
+	// checkbox column.
+	dot := ""
+	if d := styles.ListDot(it.opt.Color); d != "" {
+		dot = d + " "
+	}
+	fmt.Fprint(w, style.Render(dot+it.Title()))
 }
 
 // New builds a chooser with the given compiled bindings.

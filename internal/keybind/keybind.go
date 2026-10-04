@@ -84,6 +84,7 @@ func Registry() []Action {
 			{"form", "edit", []string{"enter"}, "Edit selected field"},
 			{"form", "save", []string{"ctrl+s"}, "Save form"},
 			{"form", "cancel", []string{"esc"}, "Cancel form"},
+			{"form", "jump_list", []string{"l"}, "Jump to list"},
 			{"form", "jump_title", []string{"t"}, "Jump to title"},
 			{"form", "jump_notes", []string{"n"}, "Jump to notes"},
 			{"form", "jump_date", []string{"d"}, "Jump to date"},

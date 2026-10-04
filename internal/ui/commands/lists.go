@@ -13,9 +13,9 @@ func FetchLists(client *reminders.Client) tea.Cmd {
 	}
 }
 
-func CreateList(client *reminders.Client, title string) tea.Cmd {
+func CreateList(client *reminders.Client, title, color string) tea.Cmd {
 	return func() tea.Msg {
-		err := client.CreateList(title)
+		err := client.CreateList(title, color)
 		return messages.ListCreatedMsg{Err: err}
 	}
 }
@@ -27,9 +27,9 @@ func DeleteList(client *reminders.Client, id string) tea.Cmd {
 	}
 }
 
-func UpdateList(client *reminders.Client, id string, title string) tea.Cmd {
+func UpdateList(client *reminders.Client, id string, title string, color string) tea.Cmd {
 	return func() tea.Msg {
-		err := client.UpdateList(id, title)
+		err := client.UpdateList(id, title, color)
 		return messages.ListUpdatedMsg{Err: err}
 	}
 }

@@ -32,6 +32,12 @@ type Delegate struct {
 	selectedStyle lipgloss.Style
 	normalStyle   lipgloss.Style
 	ace           *aceState
+	drag          *dragState
+}
+
+// dragState holds the reminder ID currently lifted by a mouse drag.
+type dragState struct {
+	id string
 }
 
 func NewDelegate() Delegate {
@@ -42,7 +48,8 @@ func NewDelegate() Delegate {
 			PaddingLeft(1),
 		normalStyle: lipgloss.NewStyle().
 			PaddingLeft(2),
-		ace: &aceState{},
+		ace:  &aceState{},
+		drag: &dragState{},
 	}
 }
 
@@ -72,6 +79,12 @@ func (d Delegate) Render(w io.Writer, m list.Model, index int, listItem list.Ite
 		}
 	}
 
+	// A dragged row is dimmed and prefixed with a braille grip so it reads
+	// as lifted out of the list.
+	prefix := ""
+	if d.drag != nil && d.drag.id == r.ID {
+		prefix = styles.ReminderDimStyle.Render("⠿ ") // ⠿
+	}
 	// Line 1: checkbox + title + priority
 	checkbox := styles.CheckboxIcon(r.Completed)
 	var title string
@@ -81,7 +94,7 @@ func (d Delegate) Render(w io.Writer, m list.Model, index int, listItem list.Ite
 		title = styles.ReminderTitleStyle.Render(r.Title)
 	}
 	priority := styles.PriorityIcon(r.Priority)
-	line1 := fmt.Sprintf("%s %s%s%s", checkbox, label, title, priority)
+	line1 := prefix + fmt.Sprintf("%s %s%s%s", checkbox, label, title, priority)
 
 	// Line 2: due date + notes preview
 	var parts []string

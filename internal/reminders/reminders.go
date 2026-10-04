@@ -165,6 +165,9 @@ func (c *Client) UpdateReminder(id string, input UpdateReminderInput) (*Reminder
 	if input.Notes != nil {
 		ekInput.Notes = input.Notes
 	}
+	if input.ListName != nil {
+		ekInput.ListName = input.ListName
+	}
 	if input.ClearDueDate {
 		ekInput.ClearDueDate = true
 	} else if input.DueDate != nil {

@@ -27,6 +27,8 @@ func getVersion() string {
 
 func main() {
 	args := os.Args[1:]
+	createOnly := false
+	createList := ""
 	if len(args) > 0 {
 		switch args[0] {
 		case "config":
@@ -52,6 +54,17 @@ func main() {
 		case "version", "--version", "-v":
 			fmt.Println("nag " + getVersion())
 			return
+		case "--create":
+			// Falls through to normal startup with only the form shown.
+			createOnly = true
+			switch len(args) {
+			case 1:
+			case 2:
+				createList = args[1]
+			default:
+				fmt.Fprintln(os.Stderr, cliUsage())
+				os.Exit(1)
+			}
 		default:
 			fmt.Fprintln(os.Stderr, cliUsage())
 			os.Exit(1)
@@ -67,7 +80,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	model := ui.NewModel(client, keys, cfg.AceAlphabet, cfg.AceTimeoutSeconds)
+	var model ui.Model
+	if createOnly {
+		model = ui.NewCreateModel(client, keys, createList)
+	} else {
+		model = ui.NewModel(client, keys, cfg.AceAlphabet, cfg.AceTimeoutSeconds)
+	}
 	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -94,11 +112,11 @@ func loadKeysOrExit() (keybind.Map, config.Config) {
 func cliUsage() string {
 	return `nag — A terminal UI for Apple Reminders
 
-Usage:
-  nag              Launch the TUI
-  nag config init  Write the default config file
-  nag help         Show this help message
-  nag version      Show version
+  nag                  Launch the TUI
+  nag --create [list]  Open the reminder form only (optionally preselecting a list)
+  nag config init      Write the default config file
+  nag help             Show this help message
+  nag version          Show version
 
 Note:
   On first run, macOS will prompt for Reminders access.

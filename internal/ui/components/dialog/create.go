@@ -49,15 +49,17 @@ type chooserPurpose int
 
 const (
 	chooserNone chooserPurpose = iota
+	chooserList
 	chooserPriority
 	chooserRecurrence
 )
 
-// formField identifies one of the six main form rows.
+// formField identifies one of the seven main form rows.
 type formField int
 
 const (
-	fieldTitle formField = iota
+	fieldList formField = iota
+	fieldTitle
 	fieldNotes
 	fieldDate
 	fieldTime
@@ -65,11 +67,11 @@ const (
 	fieldRecurrence
 )
 
-const formFieldCount = 6
+const formFieldCount = 7
 
 const noField formField = -1
 
-// formMode distinguishes browsing the six rows from editing one field.
+// formMode distinguishes browsing the form rows from editing one field.
 type formMode int
 
 const (
@@ -118,8 +120,17 @@ type CreateModel struct {
 	now  time.Time
 	base time.Time
 
-	visible   bool
-	listName  string
+	visible bool
+	// listID is the stable ID used for UI selection; listTitle is what nag
+	// sends to EventKit, which identifies lists by name.
+	listID    string
+	listTitle string
+	// origListTitle records the opening list so a save patches the list
+	// only when it actually changed.
+	origListTitle string
+	// lists is the catalogue the picker offers; listOptions keeps only
+	// normal lists.
+	lists     []reminders.ReminderList
 	editingID string
 	width     int
 	height    int
@@ -183,33 +194,66 @@ func midnightOf(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 }
 
-// Show opens the create form for a list.
-func (m *CreateModel) Show(listName string) {
-	m.showAt(listName, time.Now())
+// Show opens the create form, preselecting listName when non-empty.
+func (m *CreateModel) Show(listName string, lists []reminders.ReminderList) {
+	m.showAt(listName, lists, time.Now())
 }
 
-func (m *CreateModel) showAt(listName string, now time.Time) {
+func (m *CreateModel) showAt(listName string, lists []reminders.ReminderList, now time.Time) {
 	m.now = now
 	m.base = midnightOf(now)
 	m.picker = datePickerNew(m.now, m.base, m.keys)
 	m.visible = true
-	m.listName = listName
+	m.lists = lists
 	m.editingID = ""
+	m.seedList(listName)
 	m.resetFormState()
-	// Create opens on the first row, ready to type; resetFormState
-	// rendered the menu, so the cached frame is rebuilt after opening.
-	m.openField(fieldTitle)
+	// A preselected list means the picker is already answered, so create
+	// starts on Title ready to type; otherwise the List row comes first.
+	// resetFormState rendered the menu, so the frame is rebuilt below.
+	first := fieldList
+	if m.listTitle != "" {
+		first = fieldTitle
+	}
+	m.selected = first
+	m.openField(first)
 	m.rebuildPane()
 }
 
-// ShowEdit opens the edit form prefilled from an existing reminder. The
-// imported due timestamp is converted to the captured local location before
-// prefilling Date and Time.
-func (m *CreateModel) ShowEdit(r reminders.Reminder) {
-	m.showEditAt(r, time.Now())
+// seedList resolves a preselected list title against the catalogue. A
+// title the catalogue does not know still seeds listTitle, so a name-only
+// caller keeps working; only the ID stays empty.
+func (m *CreateModel) seedList(listName string) {
+	m.listTitle = listName
+	m.listID = ""
+	for _, l := range m.lists {
+		if listName != "" && l.Title == listName {
+			m.listID = l.ID
+			break
+		}
+	}
+	m.origListTitle = m.listTitle
 }
 
-func (m *CreateModel) showEditAt(r reminders.Reminder, now time.Time) {
+// listTitleForID resolves a reminder's list through the catalogue it was
+// handed; an unknown ID yields "" so the picker opens instead.
+func listTitleForID(lists []reminders.ReminderList, id string) string {
+	for _, l := range lists {
+		if l.ID == id {
+			return l.Title
+		}
+	}
+	return ""
+}
+
+// ShowEdit opens the edit form prefilled from an existing reminder, with
+// its list resolved through lists. The imported due timestamp is converted
+// to the captured local location before prefilling Date and Time.
+func (m *CreateModel) ShowEdit(r reminders.Reminder, lists []reminders.ReminderList) {
+	m.showEditAt(r, lists, time.Now())
+}
+
+func (m *CreateModel) showEditAt(r reminders.Reminder, lists []reminders.ReminderList, now time.Time) {
 	m.now = now
 	loc := now.Location()
 	if r.DueDate != nil {
@@ -219,8 +263,9 @@ func (m *CreateModel) showEditAt(r reminders.Reminder, now time.Time) {
 	}
 	m.picker = datePickerNew(m.now, m.base, m.keys)
 	m.visible = true
+	m.lists = lists
 	m.editingID = r.ID
-	m.listName = ""
+	m.seedList(listTitleForID(lists, r.ListID))
 	m.resetFormState()
 	// Editing starts in the left-hand menu; follow is a create-time
 	// convenience, not a default the user did not ask for here.
@@ -297,9 +342,29 @@ func (m *CreateModel) Hide() {
 	m.blurAll()
 }
 
+// ReopenAfterError re-shows the form with its submitted values intact and
+// a sticky error, for `nag --create` where a failed save has no other
+// screen to fall back to. Deliberately not resetFormState: the typed
+// title, notes and date must survive the failure.
+func (m *CreateModel) ReopenAfterError(text string) {
+	m.visible = true
+	m.errText = text
+	m.mode = formBrowsing
+	m.selected = fieldList
+	m.active = noField
+	m.blurAll()
+	m.rebuildPane()
+}
+
 func (m CreateModel) Visible() bool {
 	return m.visible
 }
+
+// TitleValue returns the committed title text.
+func (m CreateModel) TitleValue() string { return m.titleInput.Value() }
+
+// ErrorText returns the sticky error shown under the form, or "".
+func (m CreateModel) ErrorText() string { return m.errText }
 
 func (m CreateModel) isEditing() bool {
 	return m.editingID != ""
@@ -323,6 +388,10 @@ func (m *CreateModel) openField(f formField) {
 	m.active = f
 	m.blurAll()
 	switch f {
+	case fieldList:
+		m.choiceOwner = fieldList
+		m.choiceOpen = true
+		m.openOuterChooser(fieldList, "")
 	case fieldTitle:
 		m.editSnapshot = m.titleInput.Value()
 		m.titleInput.Focus()
@@ -605,6 +674,19 @@ func recurrenceLabel(rules []eventkit.RecurrenceRule) string {
 	return "Existing custom schedule"
 }
 
+// listOptions are the pickable lists: normal lists only. Smart lists and the
+// separator are never offered.
+func (m *CreateModel) listOptions() []selectorOption {
+	opts := make([]selectorOption, 0, len(m.lists))
+	for _, l := range m.lists {
+		if l.Kind != reminders.ListNormal {
+			continue
+		}
+		opts = append(opts, selectorOption{ID: l.ID, Label: l.Title, Color: l.Color})
+	}
+	return opts
+}
+
 // priorityOptions are the four fixed choices in default display order.
 func priorityOptions() []selectorOption {
 	return []selectorOption{
@@ -653,6 +735,8 @@ func (m CreateModel) jumpHint(action string) string {
 
 func (m CreateModel) fieldLabel(f formField) string {
 	switch f {
+	case fieldList:
+		return "List"
 	case fieldTitle:
 		return "Title"
 	case fieldNotes:
@@ -670,6 +754,8 @@ func (m CreateModel) fieldLabel(f formField) string {
 
 func (m CreateModel) jumpAction(f formField) string {
 	switch f {
+	case fieldList:
+		return "jump_list"
 	case fieldTitle:
 		return "jump_title"
 	case fieldNotes:
@@ -689,6 +775,11 @@ func (m CreateModel) jumpAction(f formField) string {
 // for the active one.
 func (m CreateModel) summaryValue(f formField) string {
 	switch f {
+	case fieldList:
+		if m.listTitle == "" {
+			return "None"
+		}
+		return m.listTitle
 	case fieldTitle:
 		return strings.TrimSpace(m.titleInput.Value())
 	case fieldNotes:
@@ -730,7 +821,7 @@ func (m CreateModel) summaryValue(f formField) string {
 	}
 }
 
-// summaryLines renders the six left-pane rows, each padded to exactly maxW
+// summaryLines renders the left-pane rows, each padded to exactly maxW
 // columns so the divider column stays fixed; long values are truncated.
 func (m CreateModel) summaryLines(maxW int) []string {
 	selectedStyle := lipgloss.NewStyle().Foreground(styles.Teal).Bold(true).Width(maxW)
@@ -785,6 +876,12 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 		m.purpose = chooserNone
 		m.selector.Close()
 		switch purpose {
+		case chooserList:
+			if len(msg.IDs) == 1 {
+				m.listID = msg.IDs[0]
+				m.listTitle = listTitleForID(m.lists, msg.IDs[0])
+			}
+			m.finishChoice(true)
 		case chooserPriority:
 			if len(msg.IDs) == 1 {
 				m.priority = priorityFromID(msg.IDs[0])
@@ -862,6 +959,10 @@ func (m CreateModel) update(msg tea.Msg) (CreateModel, tea.Cmd) {
 				return m, nil
 			case key.Matches(keyMsg, m.keys.Bind("form", "edit")):
 				m.openField(m.selected)
+				return m, nil
+			case key.Matches(keyMsg, m.keys.Bind("form", "jump_list")):
+				m.selected = fieldList
+				m.openField(fieldList)
 				return m, nil
 			case key.Matches(keyMsg, m.keys.Bind("form", "jump_title")):
 				m.selected = fieldTitle
@@ -978,10 +1079,14 @@ func (m *CreateModel) finishChoice(confirmed bool) {
 
 // openOuterChooser opens the shared chooser for a choice field.
 func (m *CreateModel) openOuterChooser(f formField, seed string) {
-	if f == fieldPriority {
+	switch f {
+	case fieldList:
+		m.purpose = chooserList
+		m.selector.Open(m.listOptions(), []string{m.listID}, false)
+	case fieldPriority:
 		m.purpose = chooserPriority
 		m.selector.Open(priorityOptions(), []string{priorityID(m.priority)}, false)
-	} else {
+	default:
 		m.purpose = chooserRecurrence
 		m.selector.Open(presetOptions(), []string{recurrenceChoiceID(m.recurrence)}, false)
 	}
@@ -1002,6 +1107,13 @@ func (m *CreateModel) trySubmit() tea.Cmd {
 			return nil
 		}
 		m.closeField()
+	}
+
+	if m.listTitle == "" {
+		m.errText = "Select a list"
+		m.selected = fieldList
+		m.openField(fieldList)
+		return nil
 	}
 
 	title := strings.TrimSpace(m.titleInput.Value())
@@ -1054,7 +1166,7 @@ func (m *CreateModel) trySubmit() tea.Cmd {
 	}
 	input := reminders.CreateReminderInput{
 		Title:           title,
-		ListName:        m.listName,
+		ListName:        m.listTitle,
 		Notes:           strings.TrimSpace(m.notesInput.Value()),
 		DueDate:         due,
 		Priority:        m.priority,
@@ -1074,6 +1186,13 @@ func (m CreateModel) buildEditCmd(title string, due *time.Time, clearDue bool) t
 
 	notes := strings.TrimSpace(m.notesInput.Value())
 	input.Notes = &notes
+
+	// The list patch is sent only when the user actually moved the
+	// reminder; EventKit resolves lists by name.
+	if m.listTitle != m.origListTitle {
+		name := m.listTitle
+		input.ListName = &name
+	}
 
 	if clearDue {
 		input.ClearDueDate = true

@@ -37,11 +37,17 @@ type aceState struct {
 
 // Delegate renders list items with smart list styling and separators.
 type Delegate struct {
-	ace *aceState
+	ace  *aceState
+	drop *dropState
+}
+
+// dropState holds the list ID a dragged reminder is currently over.
+type dropState struct {
+	id string
 }
 
 func newDelegate() Delegate {
-	return Delegate{ace: &aceState{}}
+	return Delegate{ace: &aceState{}, drop: &dropState{}}
 }
 
 func (d Delegate) Height() int  { return 2 }
@@ -100,8 +106,17 @@ func (d Delegate) Render(w io.Writer, m list.Model, index int, listItem list.Ite
 		}
 	}
 
-	line1 := label + titleStyle.Render(title)
+	// The colour dot sits outside the styled title so it keeps its own hue
+	// and never competes with selection emphasis.
+	dot := ""
+	if d := styles.ListDot(rl.Color); d != "" {
+		dot = d + " "
+	}
+	line1 := dot + label + titleStyle.Render(title)
 	line2 := descStyle.Render(fmt.Sprintf("%d reminders", rl.Count))
+	if d.drop != nil && d.drop.id == rl.ID {
+		line2 += " " + lipgloss.NewStyle().Foreground(styles.Teal).Render("⤓ drop")
+	}
 
 	var style lipgloss.Style
 	if selected {
@@ -122,6 +137,7 @@ type Model struct {
 	focused bool
 	keys    keybind.Map
 	ace     *aceState
+	drop    *dropState
 }
 
 func New(width, height int) Model {
@@ -133,6 +149,7 @@ func New(width, height int) Model {
 	l.DisableQuitKeybindings()
 
 	m := Model{list: l, keys: keybind.Map{}, ace: d.ace}
+	m.drop = d.drop
 	m.SetDarkBackground(true)
 	return m
 }
@@ -304,6 +321,37 @@ func (m *Model) SelectID(id string) bool {
 		}
 	}
 	return false
+}
+
+// SetDropTarget marks the list a dragged reminder would land on. An empty
+// id clears the highlight.
+func (m *Model) SetDropTarget(id string) {
+	m.drop.id = id
+}
+
+// listContentTopRows is the title bar plus its bottom padding; item i then
+// occupies rows [listContentTopRows + i*2, +2) because the delegate is
+// Height() 2 / Spacing() 0.
+const listContentTopRows = 2
+
+// IDAtContentRow returns the stable ID rendered on the given panel-content
+// row (0 = the first row of the list view), or ("", false) for the title
+// bar, the pagination strip, a gap, a separator, or an empty list.
+func (m Model) IDAtContentRow(row int) (string, bool) {
+	if row < listContentTopRows {
+		return "", false
+	}
+	items := m.list.VisibleItems()
+	start, end := m.list.Paginator.GetSliceBounds(len(items))
+	i := (row - listContentTopRows) / 2
+	if i < 0 || start+i >= end {
+		return "", false
+	}
+	it, ok := items[start+i].(Item)
+	if !ok || it.List.Kind == reminders.ListSeparator {
+		return "", false
+	}
+	return it.List.ID, true
 }
 
 // selDir records the movement direction of the last navigation event so

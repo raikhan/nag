@@ -93,3 +93,12 @@ func PriorityIcon(priority int) string {
 		return ""
 	}
 }
+
+// ListDot renders a filled circle in the list's colour, or "" when the
+// list has none (smart lists, or a list still on EventKit's default).
+func ListDot(color string) string {
+	if color == "" {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).SetString("●").String()
+}

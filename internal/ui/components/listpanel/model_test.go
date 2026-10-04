@@ -1,7 +1,10 @@
 package listpanel
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 
 	"charm.land/bubbletea/v2"
 	"github.com/oronbz/nag/internal/keybind"
@@ -186,5 +189,56 @@ func TestSeparatorOnlySetIsSafe(t *testing.T) {
 	empty, _ = empty.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
 	if _, ok := selectedID(t, empty); ok {
 		t.Fatal("empty set must not yield a selected list")
+	}
+}
+
+// TestListColourDropMarkerAndRowHitTesting covers the three sidebar
+// additions: the colour dot per row, the drop-target marker, and the
+// content-row mapping mouse clicks rely on.
+func TestListColourDropMarkerAndRowHitTesting(t *testing.T) {
+	coloured := normal("work", "Work")
+	coloured.Color = "#2E7FFA"
+	m := New(30, 20)
+	m.SetKeys(mustKeys(t))
+	m.SetLists([]reminders.ReminderList{coloured, normal("play", "Play")})
+
+	// Only the coloured row carries a dot.
+	view := ansi.Strip(m.View())
+	if !strings.Contains(view, "● Work") {
+		t.Fatalf("colour dot missing:\n%s", view)
+	}
+	if strings.Contains(view, "● Play") {
+		t.Fatalf("a colourless list rendered a dot:\n%s", view)
+	}
+
+	// The drop marker appears on the target row only.
+	m.SetDropTarget("play")
+	view = ansi.Strip(m.View())
+	if strings.Count(view, "⤓ drop") != 1 {
+		t.Fatalf("drop marker count != 1:\n%s", view)
+	}
+	if !strings.Contains(view, "⤓ drop") || !strings.Contains(view, "Play") {
+		t.Fatalf("drop marker not on the target row:\n%s", view)
+	}
+	m.SetDropTarget("")
+	if strings.Contains(ansi.Strip(m.View()), "⤓ drop") {
+		t.Fatal("drop marker survived clearing the target")
+	}
+
+	// Row mapping: the title bar and the area past the last item hit
+	// nothing, and every item row resolves to its own stable ID.
+	if _, ok := m.IDAtContentRow(1); ok {
+		t.Fatal("the title bar resolved to a row")
+	}
+	if _, ok := m.IDAtContentRow(listContentTopRows + 2*2); ok {
+		t.Fatal("a row past the last item resolved")
+	}
+	for i, want := range []string{"work", "play"} {
+		for _, row := range []int{listContentTopRows + i*2, listContentTopRows + i*2 + 1} {
+			got, ok := m.IDAtContentRow(row)
+			if !ok || got != want {
+				t.Fatalf("row %d = (%q, %v), want %q", row, got, ok, want)
+			}
+		}
 	}
 }

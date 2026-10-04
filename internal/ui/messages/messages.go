@@ -33,6 +33,11 @@ type ReminderDeletedMsg struct {
 	Err error
 }
 
+type ReminderMovedMsg struct {
+	ListTitle string
+	Err       error
+}
+
 type ListCreatedMsg struct {
 	Err error
 }

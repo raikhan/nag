@@ -60,3 +60,10 @@ func DeleteReminder(client *reminders.Client, id string) tea.Cmd {
 		return messages.ReminderDeletedMsg{ID: id, Err: err}
 	}
 }
+
+func MoveReminder(client *reminders.Client, id, listName string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := client.UpdateReminder(id, reminders.UpdateReminderInput{ListName: &listName})
+		return messages.ReminderMovedMsg{ListTitle: listName, Err: err}
+	}
+}

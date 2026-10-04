@@ -15,6 +15,10 @@ A LazyGit-style terminal UI for [Apple Reminders](https://support.apple.com/guid
 - **Smart lists** — Today (includes overdue) and Scheduled views
 - **Vim-style navigation** — `j`/`k`, `g`/`G`, `Ctrl-d`/`Ctrl-u`
 - **Create reminders** — title, due date with time, early alert, priority
+- **List picker** — fuzzy-search the list a reminder goes in, and move an
+  existing reminder between lists from the same field
+- **List colours** — pick a swatch when creating or renaming a list; it
+  shows as a dot in the sidebar, the picker, and the form summary
 - **Complete/uncomplete** — toggle with Space, 2s grace period to undo
 - **Delete** — with confirmation prompt
 - **Open in Reminders** — jump to the reminder in Apple Reminders
@@ -22,7 +26,8 @@ A LazyGit-style terminal UI for [Apple Reminders](https://support.apple.com/guid
 - **Show/hide completed** — toggle visibility with `c`
 - **Auto-refresh** — polls every 10 seconds for external changes
 - **Filter/search** — fuzzy search across titles and notes
-- **Mouse support** — click to focus panels, scroll to navigate
+- **Mouse support** — click a row to select it, double-click to open its
+  editor, drag a reminder onto a list to move it, scroll to navigate
 
 ## Install
 
@@ -54,6 +59,14 @@ make install
 nag
 ```
 
+To jump straight into the reminder form — handy from a keybinding or a
+script — pass `--create`, optionally with a list to preselect:
+
+```bash
+nag --create          # the form alone, with the list picker focused
+nag --create Work     # the form alone, with Work preselected
+```
+
 On first run, macOS will prompt for Reminders access. You can manage this in **System Settings > Privacy & Security > Reminders**.
 
 ## Key Bindings
@@ -75,7 +88,9 @@ defaults, and `nag help` to list the bindings currently in effect.
 | `←` / `→`, `PgUp` / `PgDn`, `b` / `u`, `f` | Page the focused list |
 | `/` | Filter / search |
 | `z` | Ace jump to any visible list or reminder row |
-| Left click | Focus panel |
+| Left click | Select the row under the cursor and focus its panel |
+| Double click | Open the reminder or list editor |
+| Drag a reminder onto a list | Move it to that list |
 | Mouse wheel | Scroll |
 
 ### Actions
@@ -99,7 +114,7 @@ The create/edit form keeps all seven fields visible beside the active editor.
 |-----|--------|
 | `Tab` / `j` | Next field (browsing only — disabled while a field editor is open) |
 | `Shift-Tab` / `k` | Previous field (browsing only) |
-| `t` `n` `d` `i` `a` `p` `r` | Jump to Title / Notes / Date / Time / Remind me / Priority / Recurrence and edit it |
+| `l` `t` `n` `d` `i` `a` `p` `r` | Jump to List / Title / Notes / Date / Time / Remind me / Priority / Recurrence and edit it |
 | `Enter` | Edit selected field / finish the open field |
 | `Ctrl-J` | New line in the Notes editor |
 | `Ctrl-O` | Edit the Notes value in `$EDITOR` |
@@ -112,6 +127,9 @@ The create/edit form keeps all seven fields visible beside the active editor.
 
 Single-field dialogs (create list, confirmations) still submit with `Enter`.
 
+The List field leads the form: it fuzzy-searches your lists, shows each
+one's colour, and on edit moves the reminder when you pick a different one.
+
 ### Dialogs
 
 | Key | Action |
@@ -120,6 +138,7 @@ Single-field dialogs (create list, confirmations) still submit with `Enter`.
 | `Ctrl-S` | Submit dialog |
 | `Tab` / `j` | Next field |
 | `Shift-Tab` / `k` | Previous field |
+| `Ctrl-←` / `Ctrl-→` | On the colour row of the list dialog, walk the swatches |
 | `Esc` | Cancel dialog or inner chooser |
 
 ### General

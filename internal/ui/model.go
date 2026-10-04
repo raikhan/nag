@@ -64,9 +64,46 @@ type Model struct {
 	// aceState resets on exit and the generation must survive to invalidate
 	// stale expiry ticks.
 	aceGeneration uint64
+
+	// lists is the last loaded list catalogue, handed to the create form so
+	// its list picker has options.
+	lists []reminders.ReminderList
+	// clock is injectable so double-click timing is deterministic in tests.
+	clock func() time.Time
+	// lastClickID/lastClickAt drive double-click detection.
+	lastClickID string
+	lastClickAt time.Time
+	// dragID/dragActive/dropID track a reminder drag between panels.
+	dragID     string
+	dragActive bool
+	dropID     string
+
+	// createOnly is the `nag --create` mode: only the create form renders.
+	createOnly bool
+	// createOnlyList is the optional `--create [list]` preselection.
+	createOnlyList string
+	// createOpened guards the one-shot form opening in createOnly mode.
+	createOpened bool
 }
 
 func NewModel(client *reminders.Client, keys keybind.Map, aceAlphabet string, aceTimeoutSeconds int64) Model {
+	m := newBaseModel(client, keys)
+	m.aceAlphabet = aceAlphabet
+	m.aceTimeout = time.Duration(aceTimeoutSeconds) * time.Second
+	return m
+}
+
+// NewCreateModel builds the `nag --create` model: the create form alone,
+// preselecting listTitle when given. There is no ace alphabet or ace
+// timeout because a lone form has nothing to jump to.
+func NewCreateModel(client *reminders.Client, keys keybind.Map, listTitle string) Model {
+	m := newBaseModel(client, keys)
+	m.createOnly = true
+	m.createOnlyList = listTitle
+	return m
+}
+
+func newBaseModel(client *reminders.Client, keys keybind.Map) Model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = styles.SpinnerStyle
@@ -77,8 +114,7 @@ func NewModel(client *reminders.Client, keys keybind.Map, aceAlphabet string, ac
 	m := Model{
 		client:        client,
 		keys:          keys,
-		aceAlphabet:   aceAlphabet,
-		aceTimeout:    time.Duration(aceTimeoutSeconds) * time.Second,
+		clock:         time.Now,
 		listPanel:     lp,
 		reminderPanel: reminderpanel.New(50, 20),
 		statusBar:     statusbar.New(),
@@ -100,12 +136,13 @@ func NewModel(client *reminders.Client, keys keybind.Map, aceAlphabet string, ac
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
-		commands.FetchLists(m.client),
-		commands.AutoRefreshTick(),
-		m.spinner.Tick,
-		func() tea.Msg { return tea.RequestBackgroundColor() },
-	)
+	cmds := []tea.Cmd{commands.FetchLists(m.client)}
+	if !m.createOnly {
+		// A lone create form has nothing to poll.
+		cmds = append(cmds, commands.AutoRefreshTick())
+	}
+	cmds = append(cmds, m.spinner.Tick, func() tea.Msg { return tea.RequestBackgroundColor() })
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -141,6 +178,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		mouse := msg.Mouse()
+		// Motion is drag handling only: a press with the button held moves
+		// the drop highlight and must never reach the panels as a hover.
+		if motion, ok := msg.(tea.MouseMotionMsg); ok {
+			if m.dragID != "" && motion.Button != tea.MouseNone {
+				m.trackDrag(mouse.X, mouse.Y)
+				return m, nil
+			}
+			break
+		}
 		target, ok := m.panelForMouse(mouse.X, mouse.Y)
 		if !ok {
 			break
@@ -149,7 +195,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.MouseClickMsg:
 			if msg.Button == tea.MouseLeft {
 				m.setFocus(target)
-				return m, nil
+				cmd := m.selectRowAt(target, mouse.Y)
+				return m, cmd
+			}
+		case tea.MouseReleaseMsg:
+			if msg.Button == tea.MouseLeft {
+				cmd := m.dropDraggedReminder()
+				return m, cmd
 			}
 		case tea.MouseWheelMsg:
 			if msg.Button == tea.MouseWheelUp || msg.Button == tea.MouseWheelDown {
@@ -197,11 +249,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.aceExit()
 		}
 		m.statusBar.ClearLoading()
+		if m.createOnly && !m.createOpened && msg.Err == nil {
+			m.createOpened = true
+			m.lists = msg.Lists
+			m.createDlg.Show(preselectedListTitle(msg.Lists, m.createOnlyList), msg.Lists)
+			return m, nil
+		}
 		if msg.Err != nil {
 			m.statusBar.SetError(msg.Err.Error())
 			return m, nil
 		}
 		m.statusBar.ClearError()
+		m.lists = msg.Lists
 		m.listPanel.SetLists(msg.Lists)
 		m.resize()
 		// Populate the right panel with the initially highlighted list.
@@ -252,8 +311,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case messages.ReminderCreatedMsg:
 		m.statusBar.ClearLoading()
 		if msg.Err != nil {
-			m.statusBar.SetError("Create failed: " + msg.Err.Error())
+			errText := "Create failed: " + msg.Err.Error()
+			m.statusBar.SetError(errText)
+			if m.createOnly {
+				m.createDlg.ReopenAfterError(errText)
+			}
 			return m, nil
+		}
+		if m.createOnly {
+			// The one-shot mode exists to add a reminder; the job is done.
+			return m, tea.Quit
 		}
 		m.statusBar.ClearError()
 		m.statusBar.SetInfo("Reminder created")
@@ -325,13 +392,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case messages.ReminderMovedMsg:
+		m.statusBar.ClearLoading()
+		if msg.Err != nil {
+			m.statusBar.SetError("Move failed: " + msg.Err.Error())
+			return m, nil
+		}
+		m.statusBar.ClearError()
+		m.statusBar.SetInfo("Moved to \"" + msg.ListTitle + "\"")
+		cmds = append(cmds, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearInfoMsg{} }))
+		cmds = append(cmds, commands.FetchLists(m.client))
+		if cmd := m.fetchSelectedReminders(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+
 	case dialog.CreateListSubmitMsg:
 		m.statusBar.SetLoading("Creating list...")
-		return m, commands.CreateList(m.client, msg.Title)
+		return m, commands.CreateList(m.client, msg.Title, msg.Color)
 
 	case dialog.EditListSubmitMsg:
 		m.statusBar.SetLoading("Updating list...")
-		return m, commands.UpdateList(m.client, msg.ID, msg.Title)
+		return m, commands.UpdateList(m.client, msg.ID, msg.Title, msg.Color)
 
 	case messages.ListUpdatedMsg:
 		m.statusBar.ClearLoading()
@@ -394,10 +476,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// `nag --create` has no panels to route keys to. Quitting works with
+	// the form open too, but only through a modified alias: a bare "q"
+	// must stay typable in the title field.
+	if m.createOnly {
+		if keyMsg, ok := msg.(tea.KeyPressMsg); ok &&
+			key.Matches(keyMsg, m.keys.Bind("global", "quit")) {
+			if !m.createDlg.Visible() || keyMsg.Mod != 0 {
+				return m, tea.Quit
+			}
+		}
+	}
+
 	// Route to dialogs/overlays first if visible
 	if m.createDlg.Visible() {
 		var cmd tea.Cmd
 		m.createDlg, cmd = m.createDlg.Update(msg)
+		if m.createOnly && !m.createDlg.Visible() {
+			// Esc closed the form and this mode has nothing behind it.
+			return m, tea.Quit
+		}
 		return m, cmd
 	}
 	if m.createListDlg.Visible() {
@@ -509,6 +607,14 @@ func (m Model) viewContent() string {
 		return m.spinner.View() + " Loading..."
 	}
 
+	// `nag --create` renders the form alone: no sidebar, no panels.
+	if m.createOnly {
+		if !m.createOpened {
+			return m.spinner.View() + " Loading lists..."
+		}
+		return m.createDlg.View()
+	}
+
 	if m.helpOverlay.Visible() {
 		return m.helpOverlay.View()
 	}
@@ -575,8 +681,14 @@ func (m *Model) setFocus(panel Panel) {
 	}
 }
 
-func (m Model) panelForMouse(x, _ int) (Panel, bool) {
+// panelForMouse maps a terminal column to a panel. Rows outside the
+// rounded border (the status bar below, the top border above) belong to
+// no panel, so a wheel or click there is ignored.
+func (m Model) panelForMouse(x, y int) (Panel, bool) {
 	l := m.layout
+	if y < 1 || y > l.PanelHeight {
+		return PanelLists, false
+	}
 	if x < l.ListsWidth+2 {
 		return PanelLists, true
 	}
@@ -674,7 +786,7 @@ func (m *Model) handleNew() {
 			m.statusBar.SetInfo("Select a regular list to create reminders")
 			return
 		}
-		m.createDlg.Show(m.selectedList.Title)
+		m.createDlg.Show(m.selectedList.Title, m.lists)
 	}
 }
 
@@ -689,10 +801,10 @@ func (m *Model) handleEdit() {
 			m.statusBar.SetInfo("Cannot edit smart lists")
 			return
 		}
-		m.createListDlg.ShowEdit(list.ID, list.Title)
+		m.createListDlg.ShowEdit(list.ID, list.Title, list.Color)
 	case PanelReminders:
 		if r, ok := m.reminderPanel.SelectedReminder(); ok {
-			m.createDlg.ShowEdit(r)
+			m.createDlg.ShowEdit(r, m.lists)
 		}
 	}
 }
@@ -746,6 +858,151 @@ func (m *Model) handleOpenInApp() tea.Cmd {
 		}
 		return nil
 	}
+}
+
+// doubleClickWindow is how long two clicks on the same row count as a
+// double click.
+const doubleClickWindow = 500 * time.Millisecond
+
+// IDAtMouseRow maps a terminal row inside a panel to the stable ID of the
+// row rendered there. Row 0 is the panel's top border and row
+// PanelHeight+1 its bottom one, so neither can hit a row.
+func (m *Model) IDAtMouseRow(panel Panel, y int) (string, bool) {
+	if y < 1 || y > m.layout.PanelHeight {
+		return "", false
+	}
+	if panel == PanelLists {
+		return m.listPanel.IDAtContentRow(y - 1)
+	}
+	return m.reminderPanel.IDAtContentRow(y - 1)
+}
+
+// selectRowAt moves the panel selection to the row under the cursor. A
+// sidebar hit also loads that list; a reminder hit arms both the drag and
+// the double-click detector, and opens the editor on a double click.
+func (m *Model) selectRowAt(target Panel, y int) tea.Cmd {
+	id, ok := m.IDAtMouseRow(target, y)
+	if !ok {
+		return nil
+	}
+	if target == PanelLists {
+		if !m.listPanel.SelectID(id) {
+			return nil
+		}
+		if m.openDoubleClicked(PanelLists, id) {
+			return nil
+		}
+		m.lastClickID = id
+		m.lastClickAt = m.clock()
+		return m.syncSelectedList(false)
+	}
+	if !m.reminderPanel.SelectID(id) {
+		return nil
+	}
+	m.dragID = id
+	if m.openDoubleClicked(PanelReminders, id) {
+		// An editor opened, so the press is not a drag.
+		m.dragID = ""
+		return nil
+	}
+	m.lastClickID = id
+	m.lastClickAt = m.clock()
+	return nil
+}
+
+// openDoubleClicked opens the matching editor when the same row is clicked
+// twice inside doubleClickWindow. It reports whether it opened anything.
+func (m *Model) openDoubleClicked(panel Panel, id string) bool {
+	if m.lastClickID != id || m.clock().Sub(m.lastClickAt) > doubleClickWindow {
+		return false
+	}
+	m.lastClickID = ""
+	if panel == PanelLists {
+		list, ok := findList(m.lists, id)
+		if !ok {
+			return false
+		}
+		m.createListDlg.ShowEdit(list.ID, list.Title, list.Color)
+		return true
+	}
+	r, ok := findReminder(m.reminderPanel.Reminders(), id)
+	if !ok {
+		return false
+	}
+	m.createDlg.ShowEdit(r, m.lists)
+	return true
+}
+
+// trackDrag turns a held-button motion into a drag and recomputes the drop
+// target. Only normal lists accept a reminder, so smart lists and the
+// separator never highlight.
+func (m *Model) trackDrag(x, y int) {
+	m.dragActive = true
+	m.dropID = ""
+	if panel, ok := m.panelForMouse(x, y); ok && panel == PanelLists {
+		if id, ok := m.IDAtMouseRow(panel, y); ok {
+			if list, ok := findList(m.lists, id); ok && list.Kind == reminders.ListNormal {
+				m.dropID = id
+			}
+		}
+	}
+	m.listPanel.SetDropTarget(m.dropID)
+	m.reminderPanel.SetDragging(m.dragID)
+}
+
+// dropDraggedReminder moves the dragged reminder onto the highlighted list.
+// A press that never moved never armed dragActive, so a plain click cannot
+// move anything.
+func (m *Model) dropDraggedReminder() tea.Cmd {
+	dragID, active, dropID := m.dragID, m.dragActive, m.dropID
+	m.dragID, m.dragActive, m.dropID = "", false, ""
+	m.listPanel.SetDropTarget("")
+	m.reminderPanel.SetDragging("")
+	if !active || dropID == "" || dragID == "" {
+		return nil
+	}
+	r, ok := findReminder(m.reminderPanel.Reminders(), dragID)
+	if !ok || r.ListID == dropID {
+		return nil
+	}
+	list, ok := findList(m.lists, dropID)
+	if !ok {
+		return nil
+	}
+	m.statusBar.SetLoading("Moving reminder...")
+	return commands.MoveReminder(m.client, dragID, list.Title)
+}
+
+// preselectedListTitle resolves a `--create [list]` argument against the
+// loaded catalogue. An unknown title yields "" so the picker opens.
+func preselectedListTitle(lists []reminders.ReminderList, title string) string {
+	if title == "" {
+		return ""
+	}
+	for _, l := range lists {
+		if l.Title == title {
+			return l.Title
+		}
+	}
+	return ""
+}
+
+func findList(lists []reminders.ReminderList, id string) (reminders.ReminderList, bool) {
+	for _, l := range lists {
+		if l.ID == id {
+			return l, true
+		}
+	}
+	return reminders.ReminderList{}, false
+}
+
+func findReminder(items []reminders.Reminder, id string) (reminders.Reminder, bool) {
+	for _, r := range items {
+		if r.ID == id {
+			return r, true
+		}
+	}
+	return reminders.Reminder{}, false
 }
 
 type clearInfoMsg struct{}

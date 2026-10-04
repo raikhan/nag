@@ -15,6 +15,7 @@ type Model struct {
 	focused bool
 	keys    keybind.Map
 	ace     *aceState
+	drag    *dragState
 }
 
 func New(width, height int) Model {
@@ -26,7 +27,7 @@ func New(width, height int) Model {
 	l.SetShowHelp(false)
 	l.DisableQuitKeybindings()
 
-	m := Model{list: l, keys: keybind.Map{}, ace: delegate.ace}
+	m := Model{list: l, keys: keybind.Map{}, ace: delegate.ace, drag: delegate.drag}
 	m.SetDarkBackground(true)
 	return m
 }
@@ -217,6 +218,37 @@ func (m *Model) SelectID(id string) bool {
 		}
 	}
 	return false
+}
+
+// SetDragging marks the reminder currently lifted by a mouse drag. An
+// empty id clears the lifted marker.
+func (m *Model) SetDragging(id string) {
+	m.drag.id = id
+}
+
+// listContentTopRows is the title bar plus its bottom padding; item i then
+// occupies rows [listContentTopRows + i*2, +2) because the delegate is
+// Height() 2 / Spacing() 0.
+const listContentTopRows = 2
+
+// IDAtContentRow returns the stable ID rendered on the given panel-content
+// row (0 = the first row of the list view), or ("", false) for the title
+// bar, the pagination strip, a gap, or an empty list.
+func (m Model) IDAtContentRow(row int) (string, bool) {
+	if row < listContentTopRows {
+		return "", false
+	}
+	items := m.list.VisibleItems()
+	start, end := m.list.Paginator.GetSliceBounds(len(items))
+	i := (row - listContentTopRows) / 2
+	if i < 0 || start+i >= end {
+		return "", false
+	}
+	it, ok := items[start+i].(Item)
+	if !ok {
+		return "", false
+	}
+	return it.Reminder.ID, true
 }
 
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {

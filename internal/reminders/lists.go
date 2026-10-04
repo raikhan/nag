@@ -26,15 +26,17 @@ func (c *Client) Lists() ([]ReminderList, error) {
 		lists[i] = ReminderList{
 			ID:    l.ID,
 			Title: l.Title,
+			Color: l.Color,
 			Count: incompleteCounts[l.ID],
 		}
 	}
 	return lists, nil
 }
 
-// ListsWithSmart returns smart lists (Today, Scheduled) + separator + normal lists.
-func (c *Client) CreateList(title string) error {
-	_, err := c.ek.CreateList(ekreminders.CreateListInput{Title: title})
+// CreateList creates a list, optionally with a hex display colour. An
+// empty colour is omitted so EventKit assigns its default.
+func (c *Client) CreateList(title, color string) error {
+	_, err := c.ek.CreateList(ekreminders.CreateListInput{Title: title, Color: color})
 	return err
 }
 
@@ -42,11 +44,19 @@ func (c *Client) DeleteList(id string) error {
 	return c.ek.DeleteList(id)
 }
 
-func (c *Client) UpdateList(id string, title string) error {
-	_, err := c.ek.UpdateList(id, ekreminders.UpdateListInput{Title: &title})
+// UpdateList renames a list and, when color is non-empty, sets its display
+// colour. An empty colour is never transmitted, so a rename leaves the
+// stored hue untouched.
+func (c *Client) UpdateList(id string, title string, color string) error {
+	input := ekreminders.UpdateListInput{Title: &title}
+	if color != "" {
+		input.Color = &color
+	}
+	_, err := c.ek.UpdateList(id, input)
 	return err
 }
 
+// ListsWithSmart returns smart lists (Today, Scheduled) + separator + normal lists.
 func (c *Client) ListsWithSmart() ([]ReminderList, error) {
 	normal, err := c.Lists()
 	if err != nil {

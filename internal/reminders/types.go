@@ -51,6 +51,7 @@ type ReminderList struct {
 	ID    string
 	Title string
 	Count int
+	Color string
 	Kind  ListKind
 }
 
@@ -82,6 +83,7 @@ type UpdateReminderInput struct {
 	Title           *string
 	Notes           *string
 	DueDate         *time.Time
+	ListName        *string
 	ClearDueDate    bool
 	Priority        *int
 	RecurrenceRules *[]eventkit.RecurrenceRule

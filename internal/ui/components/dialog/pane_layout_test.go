@@ -46,7 +46,7 @@ func newVisibleCreate(t *testing.T, now time.Time, w, h int) CreateModel {
 	m := NewCreate()
 	m.SetKeys(testKeys(t))
 	m.SetSize(w, h)
-	m.showAt("Alpha", now)
+	m.showAt("Alpha", testLists(), now)
 	return noFollow(m)
 }
 
@@ -91,7 +91,7 @@ func TestCreateEditPaneLayout(t *testing.T) {
 		// Side-by-side proof: a summary row shares its line with the editor.
 		shared := false
 		for _, l := range lines {
-			if strings.Contains(l, "[t] Title") && strings.Contains(l, "Due date:") {
+			if strings.Contains(l, "[l] List") && strings.Contains(l, "Due date:") {
 				shared = true
 				break
 			}
@@ -140,7 +140,7 @@ func TestCreateEditPaneLayout(t *testing.T) {
 		}
 		shared := false
 		for _, l := range lines {
-			if strings.Contains(l, "[t] Title") && strings.Contains(l, "> ") {
+			if strings.Contains(l, "[l] List") && strings.Contains(l, "> ") {
 				shared = true
 				break
 			}
