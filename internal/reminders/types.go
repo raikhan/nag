@@ -60,6 +60,7 @@ type Reminder struct {
 	Title           string
 	Notes           string
 	ListID          string
+	ListTitle       string
 	DueDate         *time.Time
 	Completed       bool
 	CompletionDate  *time.Time

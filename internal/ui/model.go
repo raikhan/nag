@@ -285,10 +285,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusBar.ClearError()
 		m.displayedListID = msg.ListID
-		if m.sortMode != reminders.SortDefault {
-			reminders.ApplySort(msg.Reminders, m.sortMode)
+		rows := msg.Reminders
+		var groups []reminders.CompletedGroup
+		if msg.ListID == reminders.SmartListCompleted {
+			// The Completed view is ordered by completion date, so the
+			// sort modes never apply to it.
+			groups = reminders.GroupCompleted(msg.Reminders, time.Now())
+			rows = reminders.FlattenGroups(groups)
+		} else if m.sortMode != reminders.SortDefault {
+			reminders.ApplySort(rows, m.sortMode)
 		}
-		if reminders.RemindersEqual(msg.Reminders, m.reminderPanel.Reminders()) {
+		if reminders.RemindersEqual(rows, m.reminderPanel.Reminders()) {
 			// Server-side state is unchanged: a 2s poll must not churn the
 			// panel. Focus requests still complete.
 			if m.pendingFocus {
@@ -300,7 +307,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Only a real change to the visible rows ends the ace jump; the
 		// unchanged-poll early return above keeps it alive.
 		m.aceExit()
-		m.reminderPanel.SetReminders(msg.Reminders)
+		if msg.ListID == reminders.SmartListCompleted {
+			m.reminderPanel.SetGroups(groups)
+		} else {
+			m.reminderPanel.SetReminders(rows)
+		}
 		m.resize()
 		if m.pendingFocus {
 			m.pendingFocus = false
@@ -342,6 +353,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Refresh lists immediately for count update; delay reminder re-fetch
 		// so the user sees the toggle and can undo with Space.
+		if m.showingCompleted() {
+			// An uncompleted task leaves this view for good, so there is
+			// no state on screen worth holding on to for the grace period.
+			m.statusBar.SetInfo("Reminder uncompleted")
+			return m, tea.Batch(
+				commands.FetchLists(m.client),
+				m.fetchSelectedReminders(),
+				tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearInfoMsg{} }),
+			)
+		}
 		return m, tea.Batch(
 			commands.FetchLists(m.client),
 			tea.Tick(2*time.Second, func(time.Time) tea.Msg { return delayedRefreshMsg{} }),
@@ -570,6 +591,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(keyMsg, m.keys.Bind("global", "open_in_app")):
 			return m, m.handleOpenInApp()
 		case key.Matches(keyMsg, m.keys.Bind("global", "sort")):
+			if m.showingCompleted() {
+				m.statusBar.SetInfo("Completed is always sorted by completion date")
+				return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearInfoMsg{} })
+			}
 			m.sortMode = m.sortMode.Next()
 			m.statusBar.SetSortLabel(m.sortMode.Label())
 			items := m.reminderPanel.Reminders()
@@ -578,6 +603,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusBar.SetInfo("Sort: " + m.sortMode.Label())
 			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearInfoMsg{} })
 		case key.Matches(keyMsg, m.keys.Bind("global", "show_completed")):
+			if m.showingCompleted() {
+				m.statusBar.SetInfo("This view only shows completed reminders")
+				return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return clearInfoMsg{} })
+			}
 			m.showCompleted = !m.showCompleted
 			if m.showCompleted {
 				m.statusBar.SetInfo("Showing completed")
@@ -765,19 +794,33 @@ func (m *Model) fetchSelectedReminders() tea.Cmd {
 		return commands.FetchTodayReminders(m.client, m.showCompleted)
 	case reminders.SmartListScheduled:
 		return commands.FetchScheduledReminders(m.client, m.showCompleted)
+	case reminders.SmartListCompleted:
+		return commands.FetchCompletedReminders(m.client)
 	default:
 		return commands.FetchReminders(m.client, m.selectedList.ID, m.selectedList.Title, m.showCompleted)
 	}
+}
+
+// showingCompleted reports whether the right panel currently holds the
+// cross-list Completed view, whose rows are all completed reminders.
+func (m Model) showingCompleted() bool {
+	return m.selectedList != nil && m.selectedList.ID == reminders.SmartListCompleted
 }
 
 func (m *Model) handleToggleComplete() tea.Cmd {
 	if m.focusedPanel != PanelReminders {
 		return nil
 	}
-	if r, ok := m.reminderPanel.SelectedReminder(); ok {
-		return commands.ToggleComplete(m.client, r.ID, r.Completed)
+	r, ok := m.reminderPanel.SelectedReminder()
+	if !ok {
+		return nil
 	}
-	return nil
+	if m.showingCompleted() {
+		// Every row here is completed, so the toggle always uncompletes,
+		// and the reminder goes back to the list it was completed in.
+		return commands.UncompleteFromCompleted(m.client, r.ID, r.ListID, r.ListTitle)
+	}
+	return commands.ToggleComplete(m.client, r.ID, r.Completed)
 }
 
 func (m *Model) handleNew() {

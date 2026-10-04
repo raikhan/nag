@@ -12,7 +12,7 @@ A LazyGit-style terminal UI for [Apple Reminders](https://support.apple.com/guid
 ## Features
 
 - **Two-panel layout** — lists sidebar + reminders
-- **Smart lists** — Today (includes overdue) and Scheduled views
+- **Smart lists** — Today (includes overdue), Scheduled, and a Completed view grouped by how long ago each task was finished
 - **Vim-style navigation** — `j`/`k`, `g`/`G`, `Ctrl-d`/`Ctrl-u`
 - **Create reminders** — title, due date with time, early alert, priority
 - **List picker** — fuzzy-search the list a reminder goes in, and move an
@@ -187,6 +187,7 @@ fixed occurrence count opens on `Never` with a banner saying so; applying a
 │          │                     │
 │ ◉ Today  │ ☐ Buy groceries !!! │
 │ ▦ Sched. │   today  Get milk.. │
+│ ✓ Compl. │ ☑ Old task     Done │
 │ ───────  │ ☑ Call dentist      │
 │ Personal │   yesterday         │
 │ Work     │                     │

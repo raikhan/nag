@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Completed smart list in the sidebar after Today and Scheduled: every completed reminder from every list, sectioned the way the Reminders app does — `Today`, `Yesterday`, `Previous 7 Days`, `Previous 30 Days`, then the remaining months of the current year (`Rest of <Month>` for the month the 30-day window cuts into) and each earlier year, newest first with the owning list, due date and completion time under every row; `Space`/`x` uncompletes a task and sends it back to its original list, re-creating that list first if it was deleted while the task sat here, and the sidebar badge carries the number of completed reminders
 - Configurable keybindings via TOML (`nag config init` writes `~/.config/nag/config.toml` or `$XDG_CONFIG_HOME/nag/config.toml`); all scopes (global, list, filter, dialog, choice fields, selector, calendar, confirm, help, text input, ace) are independently remappable and `nag help` renders the configured bindings
 - Org-mode style due-date entry (`today`, `tue`, `+2d`, `+7w`, `eow`, `eom`, `sep 15`, ISO weeks, `H:MM` times) with live autocomplete and a synchronized keyboard calendar while the due field is focused
 - Fuzzy priority selection and repeat presets through a shared fuzzy selector popup

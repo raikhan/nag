@@ -27,6 +27,43 @@ func FetchScheduledReminders(client *reminders.Client, showCompleted bool) tea.C
 	}
 }
 
+func FetchCompletedReminders(client *reminders.Client) tea.Cmd {
+	return func() tea.Msg {
+		items, err := client.CompletedReminders()
+		return messages.RemindersLoadedMsg{Reminders: items, ListID: reminders.SmartListCompleted, Err: err}
+	}
+}
+
+// UncompleteFromCompleted clears a completed reminder's completion and
+// makes sure it lands back in its original list, re-creating that list when
+// it no longer exists. Completing never moves a reminder, so the only way
+// it loses its list is the list being deleted while the reminder sat in the
+// Completed view.
+func UncompleteFromCompleted(client *reminders.Client, id, listID, listTitle string) tea.Cmd {
+	return func() tea.Msg {
+		client.InvalidateCompletedCount()
+		title, recreated, err := client.EnsureList(listID, listTitle)
+		if err != nil {
+			return messages.ReminderCompletedMsg{Err: err}
+		}
+		r, err := client.UncompleteReminder(id)
+		if err != nil {
+			return messages.ReminderCompletedMsg{Err: err}
+		}
+		if !recreated {
+			return messages.ReminderCompletedMsg{Reminder: r, Err: nil}
+		}
+		if _, err := client.UpdateReminder(id, reminders.UpdateReminderInput{ListName: &title}); err != nil {
+			return messages.ReminderCompletedMsg{Err: err}
+		}
+		moved, err := client.Reminder(id)
+		if err != nil {
+			return messages.ReminderCompletedMsg{Err: err}
+		}
+		return messages.ReminderCompletedMsg{Reminder: moved, Err: nil}
+	}
+}
+
 func CreateReminder(client *reminders.Client, input reminders.CreateReminderInput) tea.Cmd {
 	return func() tea.Msg {
 		r, err := client.CreateReminder(input)
@@ -50,6 +87,9 @@ func ToggleComplete(client *reminders.Client, id string, currentlyCompleted bool
 		} else {
 			r, err = client.CompleteReminder(id)
 		}
+		// The sidebar badge counts completions, so it can never wait out
+		// its TTL after a toggle.
+		client.InvalidateCompletedCount()
 		return messages.ReminderCompletedMsg{Reminder: r, Err: err}
 	}
 }

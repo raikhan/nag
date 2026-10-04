@@ -5,6 +5,7 @@ import ekreminders "github.com/BRO3886/go-eventkit/reminders"
 const (
 	SmartListToday     = "__smart_today__"
 	SmartListScheduled = "__smart_scheduled__"
+	SmartListCompleted = "__smart_completed__"
 )
 
 func (c *Client) Lists() ([]ReminderList, error) {
@@ -56,7 +57,8 @@ func (c *Client) UpdateList(id string, title string, color string) error {
 	return err
 }
 
-// ListsWithSmart returns smart lists (Today, Scheduled) + separator + normal lists.
+// ListsWithSmart returns smart lists (Today, Scheduled, Completed) +
+// separator + normal lists.
 func (c *Client) ListsWithSmart() ([]ReminderList, error) {
 	normal, err := c.Lists()
 	if err != nil {
@@ -69,6 +71,7 @@ func (c *Client) ListsWithSmart() ([]ReminderList, error) {
 	smart := []ReminderList{
 		{ID: SmartListToday, Title: "Today", Count: len(todayItems), Kind: ListSmart},
 		{ID: SmartListScheduled, Title: "Scheduled", Count: len(scheduledItems), Kind: ListSmart},
+		{ID: SmartListCompleted, Title: "Completed", Count: c.CompletedCount(), Kind: ListSmart},
 		{Kind: ListSeparator},
 	}
 

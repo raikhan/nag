@@ -13,13 +13,34 @@ import (
 	"github.com/oronbz/nag/internal/ui/styles"
 )
 
+// Item is one reminder row, or a group header when Header is set. The
+// Completed view interleaves headers between groups; every other list
+// carries reminders only.
 type Item struct {
 	Reminder reminders.Reminder
+	Header   string
 }
 
-func (i Item) Title() string       { return i.Reminder.Title }
+func (i Item) IsHeader() bool { return i.Header != "" }
+
+func (i Item) Title() string {
+	if i.IsHeader() {
+		return i.Header
+	}
+	return i.Reminder.Title
+}
+
 func (i Item) Description() string { return "" }
-func (i Item) FilterValue() string { return i.Reminder.Title + " " + i.Reminder.Notes }
+
+// FilterValue is empty for a header so a fuzzy query only ever matches
+// reminder rows: filtering the Completed view flattens the groups instead
+// of dragging unrelated section labels along.
+func (i Item) FilterValue() string {
+	if i.IsHeader() {
+		return ""
+	}
+	return i.Reminder.Title + " " + i.Reminder.Notes
+}
 
 // aceState holds the current ace-jump overlay: a label per stable reminder
 // ID and the typed prefix used to dim nonmatching labels.
@@ -63,6 +84,14 @@ func (d Delegate) Render(w io.Writer, m list.Model, index int, listItem list.Ite
 		return
 	}
 
+	// A group header occupies the same two-row slot as a reminder but
+	// keeps its second row blank.
+	if item.IsHeader() {
+		label := lipgloss.NewStyle().Bold(true).Render(item.Header)
+		_, _ = fmt.Fprint(w, d.normalStyle.MaxWidth(m.Width()).Render(label+"\n"))
+		return
+	}
+
 	r := item.Reminder
 
 	// Ace-jump label, if any. It consumes width (before MaxWidth
@@ -96,8 +125,11 @@ func (d Delegate) Render(w io.Writer, m list.Model, index int, listItem list.Ite
 	priority := styles.PriorityIcon(r.Priority)
 	line1 := prefix + fmt.Sprintf("%s %s%s%s", checkbox, label, title, priority)
 
-	// Line 2: due date + notes preview
+	// Line 2: owning list, due date, completion stamp, notes preview
 	var parts []string
+	if r.Completed && r.ListTitle != "" {
+		parts = append(parts, styles.ReminderDimStyle.Render(r.ListTitle))
+	}
 	if r.DueDate != nil {
 		dueStr := formatDueDate(*r.DueDate)
 		if isOverdue(*r.DueDate) && !r.Completed {
@@ -105,6 +137,9 @@ func (d Delegate) Render(w io.Writer, m list.Model, index int, listItem list.Ite
 		} else {
 			parts = append(parts, styles.ReminderDimStyle.Render(dueStr))
 		}
+	}
+	if r.Completed && r.CompletionDate != nil {
+		parts = append(parts, styles.ReminderDimStyle.Render(formatCompletion(*r.CompletionDate)))
 	}
 	if r.Notes != "" {
 		note := firstLine(r.Notes)
@@ -153,6 +188,19 @@ func formatDueDate(t time.Time) string {
 	}
 
 	return dateStr
+}
+
+// formatCompletion renders the stamp under a completed row. Inside the
+// day-based sections it names the bucket ("Completed: Yesterday, 8:17 pm");
+// further back the section header already carries the month or year, so the
+// stamp falls back to the full completion date, as the Reminders app does.
+func formatCompletion(t time.Time) string {
+	t = t.Local()
+	now := time.Now()
+	if !reminders.IsRecent(t, now) {
+		return "Completed: " + t.Format("2/1/2006, 3:04 pm")
+	}
+	return "Completed: " + reminders.BucketFor(t, now).Label() + ", " + t.Format("3:04 pm")
 }
 
 func isOverdue(t time.Time) bool {

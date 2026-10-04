@@ -208,6 +208,16 @@ func (c *Client) UncompleteReminder(id string) (*Reminder, error) {
 	return &r, nil
 }
 
+// Reminder fetches a single reminder by ID or ID prefix.
+func (c *Client) Reminder(id string) (*Reminder, error) {
+	result, err := c.ek.Reminder(id)
+	if err != nil {
+		return nil, err
+	}
+	r := convertReminder(*result)
+	return &r, nil
+}
+
 func (c *Client) DeleteReminder(id string) error {
 	return c.ek.DeleteReminder(id)
 }
@@ -226,6 +236,7 @@ func convertReminder(r ekreminders.Reminder) Reminder {
 		Title:           r.Title,
 		Notes:           r.Notes,
 		ListID:          r.ListID,
+		ListTitle:       r.List,
 		DueDate:         r.DueDate,
 		Completed:       r.Completed,
 		CompletionDate:  r.CompletionDate,

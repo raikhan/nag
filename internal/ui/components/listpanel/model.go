@@ -89,6 +89,8 @@ func (d Delegate) Render(w io.Writer, m list.Model, index int, listItem list.Ite
 			title = "◉ " + title
 		case reminders.SmartListScheduled:
 			title = "▦ " + title
+		case reminders.SmartListCompleted:
+			title = "✓ " + title
 		}
 	}
 

@@ -1337,3 +1337,60 @@ func TestCreateOnlyMode(t *testing.T) {
 		t.Fatalf("error text = %q", m.createDlg.ErrorText())
 	}
 }
+
+// TestCompletedViewGroupsRowsByCompletionAge verifies the Completed smart
+// list renders its rows under section headers with the owning list and the
+// completion stamp, keeps headers out of the reminder set, and reports why
+// the sort and show-completed keys do nothing here.
+func TestCompletedViewGroupsRowsByCompletionAge(t *testing.T) {
+	keys := mustCompileDefaults(t)
+	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1)
+	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
+	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
+		{ID: reminders.SmartListToday, Title: "Today", Count: 1, Kind: reminders.ListSmart},
+		{ID: reminders.SmartListCompleted, Title: "Completed", Count: 2, Kind: reminders.ListSmart},
+	}})
+	m.selectedList = &reminders.ReminderList{ID: reminders.SmartListCompleted, Title: "Completed", Kind: reminders.ListSmart}
+
+	// Anchor the completion stamps on calendar days so the groups are the
+	// same whatever time of day the suite runs at.
+	now := time.Now()
+	midnight := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	today := midnight.Add(9 * time.Hour)
+	yesterday := midnight.AddDate(0, 0, -1).Add(9 * time.Hour)
+	m = deliver2(t, m, messages.RemindersLoadedMsg{ListID: reminders.SmartListCompleted, Reminders: []reminders.Reminder{
+		{ID: "c-y", Title: "Push out the bins", ListID: "l1", ListTitle: "Reminders", Completed: true, CompletionDate: &yesterday},
+		{ID: "c-t", Title: "This is a test", ListID: "l2", ListTitle: "To do", Completed: true, CompletionDate: &today},
+	}})
+
+	view := ansi.Strip(m.reminderPanel.View())
+	for _, want := range []string{"Today", "Yesterday", "Reminders", "Completed: Yesterday,", "Completed: Today,"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("completed view is missing %q:\n%s", want, view)
+		}
+	}
+	if got := m.reminderPanel.Reminders(); len(got) != 2 {
+		t.Fatalf("reminder rows = %d, want 2: section headers are not reminders", len(got))
+	}
+
+	m = deliver2(t, m, tea.KeyPressMsg{Code: 's', Text: "s"})
+	m = deliver2(t, m, tea.KeyPressMsg{Code: 'c', Text: "c"})
+	if m.sortMode != reminders.SortDefault || m.showCompleted {
+		t.Fatalf("sort = %v and showCompleted = %v, but both are fixed in the completed view", m.sortMode, m.showCompleted)
+	}
+	// Uncompleting a row reports it and re-reads the view right away, so
+	// the task leaves the Completed view instead of sitting there
+	// uncompleted through a normal list's undo grace period.
+	m = deliver2(t, m, messages.ReminderCompletedMsg{Reminder: &reminders.Reminder{
+		ID: "c-t", Title: "This is a test", ListID: "l2", ListTitle: "To do",
+	}})
+	if !strings.Contains(m.viewContent(), "Reminder uncompleted") {
+		t.Fatalf("uncompleting in the completed view is not reported:\n%s", ansi.Strip(m.viewContent()))
+	}
+	m = deliver2(t, m, messages.RemindersLoadedMsg{ListID: reminders.SmartListCompleted, Reminders: []reminders.Reminder{
+		{ID: "c-y", Title: "Push out the bins", ListID: "l1", ListTitle: "Reminders", Completed: true, CompletionDate: &yesterday},
+	}})
+	if view := ansi.Strip(m.reminderPanel.View()); strings.Contains(view, "This is a test") {
+		t.Fatalf("the uncompleted task is still in the completed view:\n%s", view)
+	}
+}

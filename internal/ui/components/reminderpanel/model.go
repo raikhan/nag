@@ -108,19 +108,40 @@ func (m *Model) SetTitle(title string) {
 }
 
 func (m *Model) SetReminders(items []reminders.Reminder) {
+	listItems := make([]list.Item, len(items))
+	for i, r := range items {
+		listItems[i] = Item{Reminder: r}
+	}
+	m.setItems(listItems)
+}
+
+// SetGroups renders the Completed view: a header row per section followed
+// by its reminders. A section with an empty label (the current month) gets
+// no header row, and header rows hold no reminder, so every action that
+// reads the selection skips them.
+func (m *Model) SetGroups(groups []reminders.CompletedGroup) {
+	items := make([]list.Item, 0, len(groups))
+	for _, g := range groups {
+		if g.Label != "" {
+			items = append(items, Item{Header: g.Label})
+		}
+		for _, r := range g.Items {
+			items = append(items, Item{Reminder: r})
+		}
+	}
+	m.setItems(items)
+}
+
+func (m *Model) setItems(items []list.Item) {
 	prevID := ""
 	if r, ok := m.SelectedReminder(); ok {
 		prevID = r.ID
 	}
 	prevIndex := m.list.Index()
-	listItems := make([]list.Item, len(items))
-	for i, r := range items {
-		listItems[i] = Item{Reminder: r}
-	}
 	// Re-applying an active filter synchronously keeps the filtered view
 	// intact across refreshes instead of flashing empty until the async
 	// filter command lands.
-	if cmd := m.list.SetItems(listItems); cmd != nil {
+	if cmd := m.list.SetItems(items); cmd != nil {
 		if msg := cmd(); msg != nil {
 			m.list, _ = m.list.Update(msg)
 		}
@@ -130,9 +151,12 @@ func (m *Model) SetReminders(items []reminders.Reminder) {
 	if prevID != "" && m.SelectID(prevID) {
 		return
 	}
-	if prevIndex > 0 && prevIndex < len(listItems) {
+	if prevIndex > 0 && prevIndex < len(items) {
 		m.list.Select(prevIndex)
 	}
+	// A restored index can land on a group header; fall through to the
+	// reminder below it.
+	m.skipHeader(selDirDown)
 }
 
 func (m *Model) UpdateReminder(updated reminders.Reminder) {
@@ -148,11 +172,13 @@ func (m *Model) UpdateReminder(updated reminders.Reminder) {
 	m.list.Select(idx)
 }
 
+// Reminders returns the reminder rows only; group headers are dropped so
+// callers compare and mutate real tasks.
 func (m Model) Reminders() []reminders.Reminder {
 	items := m.list.Items()
 	result := make([]reminders.Reminder, 0, len(items))
 	for _, item := range items {
-		if ri, ok := item.(Item); ok {
+		if ri, ok := item.(Item); ok && !ri.IsHeader() {
 			result = append(result, ri.Reminder)
 		}
 	}
@@ -161,7 +187,7 @@ func (m Model) Reminders() []reminders.Reminder {
 
 func (m Model) SelectedReminder() (reminders.Reminder, bool) {
 	item, ok := m.list.SelectedItem().(Item)
-	if !ok {
+	if !ok || item.IsHeader() {
 		return reminders.Reminder{}, false
 	}
 	return item.Reminder, true
@@ -198,7 +224,7 @@ func (m Model) VisibleIDs() []string {
 	start, end := m.list.Paginator.GetSliceBounds(len(items))
 	ids := make([]string, 0, end-start)
 	for i := start; i < end && i < len(items); i++ {
-		if it, ok := items[i].(Item); ok {
+		if it, ok := items[i].(Item); ok && !it.IsHeader() {
 			ids = append(ids, it.Reminder.ID)
 		}
 	}
@@ -245,7 +271,7 @@ func (m Model) IDAtContentRow(row int) (string, bool) {
 		return "", false
 	}
 	it, ok := items[start+i].(Item)
-	if !ok {
+	if !ok || it.IsHeader() {
 		return "", false
 	}
 	return it.Reminder.ID, true
@@ -259,7 +285,72 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
+	m.skipHeader(m.navDir(msg))
 	return m, cmd
+}
+
+// selDir is the direction a cursor move travels in.
+type selDir int
+
+const (
+	selDirNone selDir = iota
+	selDirUp
+	selDirDown
+)
+
+// navDir reports which way the message moves the cursor, so a landing on
+// a group header can continue in the same direction instead of stalling.
+func (m Model) navDir(msg tea.Msg) selDir {
+	keyMsg, ok := msg.(tea.KeyPressMsg)
+	if !ok {
+		return selDirNone
+	}
+	switch {
+	case key.Matches(keyMsg, m.keys.Bind("list", "up")):
+		return selDirUp
+	case key.Matches(keyMsg, m.keys.Bind("list", "down")),
+		key.Matches(keyMsg, m.keys.Bind("list", "first")),
+		key.Matches(keyMsg, m.keys.Bind("list", "last")),
+		key.Matches(keyMsg, m.keys.Bind("list", "previous_page")),
+		key.Matches(keyMsg, m.keys.Bind("list", "next_page")):
+		return selDirDown
+	}
+	return selDirNone
+}
+
+// skipHeader moves the cursor off a group header, preferring the given
+// direction and falling back to the other one when the header sits at the
+// edge of the panel. Each pass is bounded by the item count, so a header
+// can never trap the cursor.
+func (m *Model) skipHeader(dir selDir) {
+	if len(m.list.Items()) == 0 {
+		return
+	}
+	if _, ok := m.SelectedReminder(); ok {
+		return
+	}
+	if dir == selDirNone {
+		dir = selDirDown
+	}
+	for _, d := range []selDir{dir, opposite(dir)} {
+		for range m.list.Items() {
+			if d == selDirUp {
+				m.list.CursorUp()
+			} else {
+				m.list.CursorDown()
+			}
+			if _, ok := m.SelectedReminder(); ok {
+				return
+			}
+		}
+	}
+}
+
+func opposite(dir selDir) selDir {
+	if dir == selDirUp {
+		return selDirDown
+	}
+	return selDirUp
 }
 
 func (m Model) View() string {
