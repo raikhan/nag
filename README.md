@@ -75,6 +75,14 @@ All key bindings are configurable in `~/.config/nag/config.toml` (or
 `$XDG_CONFIG_HOME/nag/config.toml`). Run `nag config init` to write the
 defaults, and `nag help` to list the bindings currently in effect.
 
+The `[ace]` table tunes the jump itself:
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `alphabet` | letters and digits | Row labels; letters used by the trigger, `ace.cancel` or `ace.backspace` are never labels |
+| `timeout_seconds` | `-1` | Auto-cancel the jump; `-1` disables the timer, `0` cancels immediately |
+| `select_list_on_jump` | `true` | A jump onto a list loads it and moves focus to its reminders like `Enter` does; `false` keeps focus in the sidebar. Jumping to a reminder row only selects it either way |
+
 ### Navigation
 
 | Key | Action |
@@ -87,7 +95,7 @@ defaults, and `nag help` to list the bindings currently in effect.
 | `Ctrl-u` / `Ctrl-d` | Half page up / down |
 | `←` / `→`, `PgUp` / `PgDn`, `b` / `u`, `f` | Page the focused list |
 | `/` | Filter / search |
-| `z` | Ace jump to any visible list or reminder row |
+| `z` | Ace jump to any visible list or reminder row (a list jump also focuses its reminders, see `[ace] select_list_on_jump`) |
 | Left click | Select the row under the cursor and focus its panel |
 | Double click | Open the reminder or list editor |
 | Drag a reminder onto a list | Move it to that list |

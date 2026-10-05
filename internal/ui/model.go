@@ -34,6 +34,9 @@ type Model struct {
 	keys        keybind.Map
 	aceAlphabet string
 	aceTimeout  time.Duration // negative disables the dedicated expiry timer
+	// aceSelectListOnJump makes a list jump behave like Enter: load the
+	// list and hand focus to its reminders once they arrive.
+	aceSelectListOnJump bool
 
 	listPanel     listpanel.Model
 	reminderPanel reminderpanel.Model
@@ -86,10 +89,11 @@ type Model struct {
 	createOpened bool
 }
 
-func NewModel(client *reminders.Client, keys keybind.Map, aceAlphabet string, aceTimeoutSeconds int64) Model {
+func NewModel(client *reminders.Client, keys keybind.Map, aceAlphabet string, aceTimeoutSeconds int64, aceSelectListOnJump bool) Model {
 	m := newBaseModel(client, keys)
 	m.aceAlphabet = aceAlphabet
 	m.aceTimeout = time.Duration(aceTimeoutSeconds) * time.Second
+	m.aceSelectListOnJump = aceSelectListOnJump
 	return m
 }
 

@@ -43,7 +43,7 @@ func mustEffectiveAceAlphabet(t *testing.T, keys keybind.Map, alphabet string) s
 // or executes backend commands.
 func newTestModel(t *testing.T) Model {
 	t.Helper()
-	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1)
+	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1, true)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -281,7 +281,7 @@ func TestV2BackgroundPreservesListState(t *testing.T) {
 // item is rendered at the list's full width, so the list must be sized to the
 // panel's inner content width (outer width minus the 2 border columns).
 func TestV2PanelContentFitsWidth(t *testing.T) {
-	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1)
+	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1, true)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -322,7 +322,7 @@ func TestRemappedListDownDrivesPanel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1)
+	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1, true)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -353,7 +353,7 @@ func TestRemappedListDownDoesNotLeakIntoFilter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1)
+	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1, true)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -385,7 +385,7 @@ func TestRemappedNextPanelDrivesRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1)
+	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1, true)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -411,10 +411,10 @@ func aceStart(t *testing.T, m Model) (Model, tea.Cmd) {
 	return next, cmd
 }
 
-// TestAceJumpSidebarSelectsListWithoutActions verifies a sidebar label
-// selects and loads that list while the sidebar stays focused and no
-// pending focus cycle happens.
-func TestAceJumpSidebarSelectsListWithoutActions(t *testing.T) {
+// TestAceJumpSidebarSelectsListLikeEnter verifies the default
+// select_list_on_jump behaviour: a sidebar label loads that list and hands
+// focus to its reminders the moment they arrive, exactly as Enter does.
+func TestAceJumpSidebarSelectsListLikeEnter(t *testing.T) {
 	m := newTestModel(t)
 	beforeLines := len(strings.Split(ansi.Strip(m.listPanel.View()), "\n"))
 
@@ -430,8 +430,49 @@ func TestAceJumpSidebarSelectsListWithoutActions(t *testing.T) {
 		t.Fatalf("labels must consume width, not height: %d -> %d lines", beforeLines, afterLines)
 	}
 
-	// Label s is the second sidebar list (Query). It must not run
-	// handleEnter's pendingFocus cycle.
+	// Label s is the second sidebar list (Query).
+	next, cmd := deliver(t, m, tea.KeyPressMsg{Code: 's', Text: "s"})
+	if cmd == nil {
+		t.Fatal("sidebar jump should fetch the selected list")
+	}
+	if next.selectedList == nil || next.selectedList.ID != "query" {
+		t.Fatalf("expected Query selected, got %+v", next.selectedList)
+	}
+	if !next.pendingFocus {
+		t.Fatal("a list jump must hand focus to its reminders")
+	}
+	// The handover waits for the fetch, so the sidebar still has focus
+	// until the reminders land.
+	if next.focusedPanel != PanelLists {
+		t.Fatalf("sidebar must stay focused until the reminders load, got %v", next.focusedPanel)
+	}
+	if next.ace.active {
+		t.Fatal("ace must exit after a jump")
+	}
+	if strings.Contains(ansi.Strip(next.listPanel.View()), "[a]") {
+		t.Fatal("ace labels were not cleared after the jump")
+	}
+
+	loaded := deliver2(t, next, messages.RemindersLoadedMsg{
+		ListID:    "query",
+		Reminders: []reminders.Reminder{{ID: "r-q", Title: "Query"}},
+	})
+	if loaded.focusedPanel != PanelReminders {
+		t.Fatalf("reminders must take focus once loaded, got %v", loaded.focusedPanel)
+	}
+	if loaded.pendingFocus {
+		t.Fatal("the pending focus cycle must be consumed by the load")
+	}
+}
+
+// TestAceJumpSidebarKeepsFocusWhenSelectDisabled is the same jump with
+// select_list_on_jump = false: the list still loads, but the sidebar keeps
+// focus for further navigation.
+func TestAceJumpSidebarKeepsFocusWhenSelectDisabled(t *testing.T) {
+	m := newTestModel(t)
+	m.aceSelectListOnJump = false
+	m, _ = aceStart(t, m)
+
 	next, cmd := deliver(t, m, tea.KeyPressMsg{Code: 's', Text: "s"})
 	if cmd == nil {
 		t.Fatal("sidebar jump should fetch the selected list")
@@ -440,16 +481,21 @@ func TestAceJumpSidebarSelectsListWithoutActions(t *testing.T) {
 		t.Fatalf("expected Query selected, got %+v", next.selectedList)
 	}
 	if next.pendingFocus {
-		t.Fatal("sidebar ace jump must not set pendingFocus")
+		t.Fatal("select_list_on_jump = false must not set pendingFocus")
 	}
 	if next.focusedPanel != PanelLists {
 		t.Fatalf("sidebar must stay focused, got %v", next.focusedPanel)
 	}
-	if next.ace.active {
-		t.Fatal("ace must exit after a jump")
+
+	loaded := deliver2(t, next, messages.RemindersLoadedMsg{
+		ListID:    "query",
+		Reminders: []reminders.Reminder{{ID: "r-q", Title: "Query"}},
+	})
+	if loaded.focusedPanel != PanelLists {
+		t.Fatalf("sidebar must stay focused after the load, got %v", loaded.focusedPanel)
 	}
-	if strings.Contains(ansi.Strip(next.listPanel.View()), "[a]") {
-		t.Fatal("ace labels were not cleared after the jump")
+	if r, ok := loaded.reminderPanel.SelectedReminder(); !ok || r.ID != "r-q" {
+		t.Fatalf("the jumped list must still load its reminders, got %+v ok=%v", r, ok)
 	}
 }
 
@@ -482,7 +528,7 @@ func TestAceJumpReminderSelectsOnly(t *testing.T) {
 // labels, dimming prefix narrowing, invalid extensions, backspace and
 // cancellation.
 func TestAceJumpTwoLetterLabelsPrefixBackspaceCancel(t *testing.T) {
-	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), "as"), -1)
+	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), "as"), -1, true)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "l1", Title: "One", Kind: reminders.ListNormal},
@@ -568,7 +614,7 @@ func TestAceJumpCapturesBeforeRootActions(t *testing.T) {
 // TestAceJumpExcludesSeparatorsOffScreenAndFilteredRows verifies target
 // eligibility at the panel level.
 func TestAceJumpExcludesSeparatorsOffScreenAndFilteredRows(t *testing.T) {
-	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1)
+	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1, true)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	lists := []reminders.ReminderList{
 		{ID: "today", Title: "Today", Kind: reminders.ListSmart},
@@ -668,7 +714,7 @@ func TestAceJumpIgnoresStaleListID(t *testing.T) {
 	}
 
 	// A nil selectedList also ignores the result.
-	m2 := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1)
+	m2 := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1, true)
 	m2 = deliver2(t, m2, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m2 = deliver2(t, m2, messages.RemindersLoadedMsg{
 		Reminders: []reminders.Reminder{{ID: "x", Title: "X"}},
@@ -761,7 +807,7 @@ func TestAceSurvivesUnchangedRefreshAndCancelsOnRealChanges(t *testing.T) {
 // TestAceStartWithNoTargetsStaysNormal verifies ace does not activate
 // without jumpable rows and reports the reason.
 func TestAceStartWithNoTargetsStaysNormal(t *testing.T) {
-	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1)
+	m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), -1, true)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, tea.KeyPressMsg{Code: 'z', Text: "z"})
 	if m.ace.active {
@@ -788,7 +834,7 @@ func TestAceToggleAndTimeout(t *testing.T) {
 	if strings.ContainsRune(eff, 'a') {
 		t.Fatalf("trigger letter a must not be a label letter: %q", eff)
 	}
-	m := NewModel(nil, keys, eff, -1)
+	m := NewModel(nil, keys, eff, -1, true)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -824,7 +870,7 @@ func TestAceToggleAndTimeout(t *testing.T) {
 
 	// Tiny alphabet: three targets with "as" produce aa/as/sa; toggling off
 	// after a partial prefix must not select anything.
-	tiny := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), "as"), -1)
+	tiny := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), "as"), -1, true)
 	tiny = deliver2(t, tiny, tea.WindowSizeMsg{Width: 120, Height: 32})
 	tiny = deliver2(t, tiny, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "l1", Title: "One", Kind: reminders.ListNormal},
@@ -867,7 +913,7 @@ func aceStartWith(t *testing.T, m Model, key tea.KeyPressMsg) (Model, tea.Cmd) {
 func TestAceTimeoutGenerations(t *testing.T) {
 	build := func(t *testing.T, seconds int64) Model {
 		t.Helper()
-		m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), seconds)
+		m := NewModel(nil, mustCompileDefaults(t), mustEffectiveAceAlphabet(t, mustCompileDefaults(t), keybind.DefaultAceAlphabet), seconds, true)
 		m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 		m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 			{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -977,7 +1023,7 @@ func TestV2SyncRefreshPreservesSelection(t *testing.T) {
 // Enter on the open list reloads and requests focus.
 func TestV2SidebarNavigationLoadsListWithoutEnter(t *testing.T) {
 	keys := mustCompileDefaults(t)
-	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1)
+	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1, true)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: "alpha", Title: "Alpha", Kind: reminders.ListNormal},
@@ -1116,7 +1162,7 @@ func TestMouseSelectsRowsAndDoubleClickOpensEditor(t *testing.T) {
 // their list.
 func newDragTestModel(t *testing.T) Model {
 	t.Helper()
-	m := NewModel(nil, mustCompileDefaults(t), "", -1)
+	m := NewModel(nil, mustCompileDefaults(t), "", -1, true)
 
 	// Clicks far apart in time, so a press/release pair never reads as a
 	// double click and swallows the drag.
@@ -1344,7 +1390,7 @@ func TestCreateOnlyMode(t *testing.T) {
 // the sort and show-completed keys do nothing here.
 func TestCompletedViewGroupsRowsByCompletionAge(t *testing.T) {
 	keys := mustCompileDefaults(t)
-	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1)
+	m := NewModel(nil, keys, mustEffectiveAceAlphabet(t, keys, keybind.DefaultAceAlphabet), -1, true)
 	m = deliver2(t, m, tea.WindowSizeMsg{Width: 120, Height: 32})
 	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: []reminders.ReminderList{
 		{ID: reminders.SmartListToday, Title: "Today", Count: 1, Kind: reminders.ListSmart},

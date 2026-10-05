@@ -29,6 +29,9 @@ func TestLoadMissingFileYieldsDefaults(t *testing.T) {
 	if cfg.AceTimeoutSeconds != -1 {
 		t.Fatalf("timeout = %d", cfg.AceTimeoutSeconds)
 	}
+	if !cfg.AceSelectListOnJump {
+		t.Fatal("select_list_on_jump must default to true")
+	}
 	if got := cfg.Keys["global"]["quit"]; len(got) != 2 {
 		t.Fatalf("quit aliases = %v", got)
 	}
@@ -165,6 +168,51 @@ func TestLoadAceTimeout(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLoadAceSelectListOnJump covers the opt-out and proves a partial
+// [ace] table leaves the default in place.
+func TestLoadAceSelectListOnJump(t *testing.T) {
+	write := func(t *testing.T, body string) {
+		t.Helper()
+		dir := tempXDG(t)
+		path := filepath.Join(dir, "nag", "config.toml")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("false disables the handover", func(t *testing.T) {
+		write(t, "[ace]\nselect_list_on_jump = false\n")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.AceSelectListOnJump {
+			t.Fatal("select_list_on_jump = false was ignored")
+		}
+	})
+
+	t.Run("unrelated ace key keeps the default", func(t *testing.T) {
+		write(t, "[ace]\ntimeout_seconds = 2\n")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.AceSelectListOnJump {
+			t.Fatal("a partial [ace] table must not clear select_list_on_jump")
+		}
+	})
+
+	t.Run("rejects a non-boolean", func(t *testing.T) {
+		write(t, "[ace]\nselect_list_on_jump = \"yes\"\n")
+		if _, err := Load(); err == nil {
+			t.Fatal("expected a type error for select_list_on_jump")
+		}
+	})
 }
 
 func TestLoadAlphabetValidation(t *testing.T) {

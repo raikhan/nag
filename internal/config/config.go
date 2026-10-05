@@ -21,9 +21,10 @@ import (
 
 // Config is the decoded nag configuration.
 type Config struct {
-	Keys              keybind.Bindings
-	AceAlphabet       string
-	AceTimeoutSeconds int64
+	Keys                keybind.Bindings
+	AceAlphabet         string
+	AceTimeoutSeconds   int64
+	AceSelectListOnJump bool
 }
 
 // Path resolves the configuration file location: $XDG_CONFIG_HOME/nag/config.toml
@@ -46,8 +47,9 @@ func Path() (string, error) {
 // aceTable uses pointers so a partial [ace] table (for example only
 // timeout_seconds) overlays onto the defaults instead of discarding them.
 type aceTable struct {
-	Alphabet       *string `toml:"alphabet"`
-	TimeoutSeconds *int64  `toml:"timeout_seconds"`
+	Alphabet         *string `toml:"alphabet"`
+	TimeoutSeconds   *int64  `toml:"timeout_seconds"`
+	SelectListOnJump *bool   `toml:"select_list_on_jump"`
 }
 
 type rawConfig struct {
@@ -99,6 +101,9 @@ func Load() (Config, error) {
 			if raw.Ace.TimeoutSeconds != nil {
 				cfg.AceTimeoutSeconds = *raw.Ace.TimeoutSeconds
 			}
+			if raw.Ace.SelectListOnJump != nil {
+				cfg.AceSelectListOnJump = *raw.Ace.SelectListOnJump
+			}
 		}
 	}
 
@@ -127,9 +132,10 @@ func validAceTimeout(seconds int64) bool {
 
 func defaultsConfig() Config {
 	return Config{
-		Keys:              keybind.Defaults(),
-		AceAlphabet:       keybind.DefaultAceAlphabet,
-		AceTimeoutSeconds: -1,
+		Keys:                keybind.Defaults(),
+		AceAlphabet:         keybind.DefaultAceAlphabet,
+		AceTimeoutSeconds:   -1,
+		AceSelectListOnJump: true,
 	}
 }
 
@@ -178,10 +184,14 @@ func writeDefaults(w io.Writer) error {
 	fmt.Fprintln(bb, "# ace.cancel or ace.backspace are never used as labels).")
 	fmt.Fprintln(bb, "# timeout_seconds: auto-cancel the ace jump after this many seconds;")
 	fmt.Fprintln(bb, "# -1 disables the timeout, 0 cancels immediately.")
+	fmt.Fprintln(bb, "# select_list_on_jump: when an ace jump lands on a list, load it and")
+	fmt.Fprintln(bb, "# move focus to its reminders like Enter does; false keeps focus in")
+	fmt.Fprintln(bb, "# the sidebar. Jumping to a reminder row only selects it either way.")
 	fmt.Fprintln(bb, "")
 	fmt.Fprintln(bb, "[ace]")
 	fmt.Fprintf(bb, "alphabet = %q\n", keybind.DefaultAceAlphabet)
 	fmt.Fprintln(bb, "timeout_seconds = -1")
+	fmt.Fprintln(bb, "select_list_on_jump = true")
 	for _, scope := range keybind.Scopes() {
 		fmt.Fprintln(bb)
 		fmt.Fprintf(bb, "[keys.%s]\n", scope)

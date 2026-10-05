@@ -84,7 +84,7 @@ func main() {
 	if createOnly {
 		model = ui.NewCreateModel(client, keys, createList)
 	} else {
-		model = ui.NewModel(client, keys, cfg.AceAlphabet, cfg.AceTimeoutSeconds)
+		model = ui.NewModel(client, keys, cfg.AceAlphabet, cfg.AceTimeoutSeconds, cfg.AceSelectListOnJump)
 	}
 	p := tea.NewProgram(model)
 	if _, err := p.Run(); err != nil {

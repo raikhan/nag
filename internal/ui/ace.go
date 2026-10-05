@@ -171,8 +171,9 @@ func (m *Model) aceHandleKey(msg tea.KeyPressMsg) tea.Cmd {
 }
 
 // aceExecute jumps to the matched target and exits ace mode. Selecting a
-// sidebar target loads that list while the sidebar stays focused; selecting
-// a reminder target only moves the selection.
+// reminder target only moves the selection. Selecting a sidebar target
+// always reloads that list; with select_list_on_jump it also hands focus to
+// the reminders, exactly as Enter on the row would.
 func (m *Model) aceExecute(t aceTarget) tea.Cmd {
 	m.aceExit()
 	switch t.panel {
@@ -193,7 +194,7 @@ func (m *Model) aceExecute(t aceTarget) tea.Cmd {
 		m.selectedList = nil // force a reload even for the open list
 		m.reminderPanel.SetReminders(nil)
 		m.displayedListID = ""
-		return m.syncSelectedList(false)
+		return m.syncSelectedList(m.aceSelectListOnJump)
 	}
 	return nil
 }
