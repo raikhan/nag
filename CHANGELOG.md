@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nag --create [list]` opens just the reminder form, optionally with a list preselected; it exits once the reminder is saved, and `Esc` or `Ctrl-C` leaves it
 
 ### Fixed
+- The help overlay (`?`) keeps its scroll position while open: the 2-second sync poll re-ran layout and snapped the view back to the top mid-scroll
 - Calendar grid aligned every one of its 42 cells with the weekday columns; adjacent-month days render dimmed instead of leaving blank leading cells
 - The create/edit form's vertical divider stays at the horizontal middle regardless of content length; long values truncate on the left pane and wrap in the right pane
 - `Tab`/`Shift-Tab` no longer interrupt an open field editor or leak into its widget

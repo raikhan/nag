@@ -130,6 +130,27 @@ func TestV2MouseFocusAndModalIsolation(t *testing.T) {
 	}
 }
 
+// TestHelpOverlayScrollSurvivesRefresh covers the periodic data poll: the
+// auto-refresh tick lands a ListsLoadedMsg every couple of seconds, and the
+// relayout it triggers must not snap the open overlay back to the top.
+func TestHelpOverlayScrollSurvivesRefresh(t *testing.T) {
+	m := newTestModel(t)
+	m = deliver2(t, m, tea.KeyPressMsg{Code: '?', Text: "?"})
+	if !m.helpOverlay.Visible() {
+		t.Fatal("help overlay did not open")
+	}
+	for range 6 {
+		m = deliver2(t, m, tea.KeyPressMsg{Code: 'j', Text: "j"})
+	}
+	scrolled := m.View().Content
+
+	m = deliver2(t, m, messages.ListsLoadedMsg{Lists: m.listPanel.Lists()})
+
+	if got := m.View().Content; got != scrolled {
+		t.Fatal("refresh relayout reset the help overlay scroll position")
+	}
+}
+
 // TestHLMovesBetweenPanels covers the vim-style panel moves: h focuses the
 // lists pane and l the reminders pane, both idempotent, and neither pages
 // the focused list (paging keeps left/right/pgup/pgdn/b/u/f).

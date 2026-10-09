@@ -18,6 +18,7 @@ type Model struct {
 	width    int
 	height   int
 	keys     keybind.Map
+	init     bool
 }
 
 func New() Model {
@@ -35,9 +36,25 @@ func (m *Model) SetSize(width, height int) {
 	if vh < 20 {
 		vh = 20
 	}
-	m.viewport = viewport.New(viewport.WithWidth(vw-4), viewport.WithHeight(vh-4))
-	m.viewport.KeyMap = m.projectViewportKeys()
-	m.viewport.SetContent(m.helpContent())
+	vw -= 4
+	vh -= 4
+	if m.init && m.viewport.Width() == vw && m.viewport.Height() == vh {
+		return
+	}
+	if !m.init {
+		m.init = true
+		m.viewport = viewport.New(viewport.WithWidth(vw), viewport.WithHeight(vh))
+		m.viewport.KeyMap = m.projectViewportKeys()
+		m.viewport.SetContent(m.helpContent())
+		return
+	}
+	// Layout runs again on every data refresh (the auto-refresh tick fires
+	// every couple of seconds), so resizing in place is required: rebuilding
+	// the viewport would snap the reader back to the top mid-scroll.
+	offset := m.viewport.YOffset()
+	m.viewport.SetWidth(vw)
+	m.viewport.SetHeight(vh)
+	m.viewport.SetYOffset(offset)
 }
 
 // SetKeys stores the compiled bindings, projects keys.help into the viewport
